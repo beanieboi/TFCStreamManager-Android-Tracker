@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">TFC Tracker</string>
+    <string name="camera_permission_denied">Camera permission is required</string>
+</resources>
