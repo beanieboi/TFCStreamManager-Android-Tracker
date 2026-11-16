@@ -16,6 +16,7 @@ android {
         versionCode = 1
         versionName = "0.1"
         ndk { abiFilters += listOf("arm64-v8a") }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -33,6 +34,14 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    // Reference-photo helpers used by both the JVM tests and the on-device benchmark.
+    sourceSets {
+        getByName("test").kotlin.srcDir("src/sharedTest/java")
+        getByName("androidTest").kotlin.srcDir("src/sharedTest/java")
+        // The reference photos ride along in the test APK for the on-device benchmark.
+        getByName("androidTest").assets.srcDir("../testdata")
+    }
 }
 
 dependencies {
@@ -48,4 +57,9 @@ dependencies {
     implementation(libs.okhttp)
 
     testImplementation(libs.junit)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
