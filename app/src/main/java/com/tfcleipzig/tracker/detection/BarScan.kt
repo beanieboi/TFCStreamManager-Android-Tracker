@@ -48,9 +48,14 @@ object BarScan {
          * measured lengths wins; null when even that is too far off (something hides the bar, or
          * the runs are wrong). End caps and reflections come out as zero-stone runs this way.
          */
-        val counts: IntArray? by lazy { allocate() }
+        val counts: IntArray? get() = allocation?.first
 
-        private fun allocate(): IntArray? {
+        /** How far [counts] is from the measured run lengths: 0 a perfect fit, up to [MAX_ALLOCATION_COST]. */
+        val cost: Float? get() = allocation?.second
+
+        private val allocation: Pair<IntArray, Float>? by lazy { allocate() }
+
+        private fun allocate(): Pair<IntArray, Float>? {
             // options[i] = (count, cost) pairs for run i.
             val options =
                 runs.mapIndexed { i, r ->
@@ -98,7 +103,7 @@ object BarScan {
                 counts[i] = choice[i + 1][t]
                 t -= counts[i]
             }
-            return counts
+            return counts to cost[runs.size][stones]
         }
 
         /** Stones left of the first free stretch of rod, or null without one or without counts. */
@@ -323,5 +328,5 @@ object BarScan {
     private const val END_DROP_COST = 0.3f
 
     /** Largest total length error, in pitches, for a bar's runs to count as read. */
-    private const val MAX_ALLOCATION_COST = 1.5f
+    const val MAX_ALLOCATION_COST = 1.5f
 }
