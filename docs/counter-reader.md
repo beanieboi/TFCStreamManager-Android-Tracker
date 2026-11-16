@@ -30,6 +30,20 @@ the reverse), so nothing relies on one colour scheme.
    found with matching pitch, free stretches as long as they physically are, no blank gap in a
    bar, bar not cut off by the frame edge.
 
+## Setup per phone
+
+`TrackerSettings` (kept across restarts): table end (A/B), the team that end's goal bar counts
+(home/away), zoom. Set with the HUD buttons or over adb:
+
+```
+adb shell am start -n com.tfcleipzig.tracker/.MainActivity --es end B --es side away --ef zoom 2.3
+```
+
+The HUD's `bars` line shows the pitch in pixels and the free margin left of the set bar and right
+of the goal bar, in pitches. Digital zoom crops around the frame centre, so aim the counters at
+the centre, then zoom until the margins are small but not zero. A bar touching the edge is not
+read. Zoom is free up to the camera's 4×.
+
 ## Tests
 
 | Test | What |
