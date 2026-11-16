@@ -1,10 +1,14 @@
 package com.tfcleipzig.tracker
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.ImageDecoder
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -12,13 +16,18 @@ import androidx.lifecycle.lifecycleScope
 import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.camera.FrameAnalyzer
 import com.tfcleipzig.tracker.databinding.ActivityMainBinding
+import com.tfcleipzig.tracker.debug.PhotoCheck
+import com.tfcleipzig.tracker.detection.GoalCounterReader
 import com.tfcleipzig.tracker.detection.GoalDetector
 import com.tfcleipzig.tracker.detection.NoopBallDetector
 import com.tfcleipzig.tracker.detection.Side
 import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -29,6 +38,16 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var stats: FrameAnalyzer.Stats? = null
 
     @Volatile private var lastGoal: String = "-"
+
+    /** Debug: result for the photo on screen, or null while the live feed shows. */
+    private var photoResult: String? = null
+
+    private val photoCheck = PhotoCheck(GoalCounterReader.Calibration.TISCH_1_BOTTOM_RIGHT)
+
+    private val pickPhoto =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null) checkPhoto(uri.toString(), ImageDecoder.createSource(contentResolver, uri))
+        }
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -53,7 +72,31 @@ class MainActivity : AppCompatActivity() {
             requestCamera.launch(Manifest.permission.CAMERA)
         }
 
+        binding.pickPhoto.setOnClickListener {
+            pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        }
+        binding.photo.setOnClickListener { closePhoto() }
+
         lifecycleScope.launch { discovery.server.collect { renderStatus() } }
+        checkPhotoExtra(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        checkPhotoExtra(intent)
+    }
+
+    /**
+     * Debug without the photo picker (MediaStore on the tracker phones may not index anything):
+     *   adb push x.jpg /sdcard/Android/data/com.tfcleipzig.tracker/files/
+     *   adb shell am start -n com.tfcleipzig.tracker/.MainActivity --es photo x.jpg
+     * A relative name is looked up in the app's external files dir.
+     */
+    private fun checkPhotoExtra(intent: Intent) {
+        val name = intent.getStringExtra(EXTRA_PHOTO) ?: return
+        intent.removeExtra(EXTRA_PHOTO)
+        val file = File(name).takeIf { it.isAbsolute } ?: File(getExternalFilesDir(null), name)
+        checkPhoto(file.path, ImageDecoder.createSource(file))
     }
 
     override fun onStart() {
@@ -95,6 +138,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun checkPhoto(
+        name: String,
+        source: ImageDecoder.Source,
+    ) {
+        photoResult = "reading…"
+        renderStatus()
+        lifecycleScope.launch {
+            val result = runCatching { withContext(Dispatchers.Default) { photoCheck.check(source) } }
+            result
+                .onSuccess { r ->
+                    binding.photo.setImageBitmap(r.image)
+                    binding.photo.visibility = View.VISIBLE
+                    val reading = r.reading?.let { "score ${it.score}  (confidence %.2f)".format(it.confidence) } ?: "no read"
+                    val aspect = if (r.sourceWidth * 3 != r.sourceHeight * 4) "  [not 4:3 landscape, squeezed]" else ""
+                    photoResult = "$reading\n       ${r.sourceWidth}x${r.sourceHeight}$aspect\n       tap photo to go back to live"
+                    Log.i(TAG, "photo $name: ${r.reading}")
+                }.onFailure {
+                    Log.w(TAG, "photo $name failed", it)
+                    photoResult = "failed: ${it.message}"
+                }
+            renderStatus()
+        }
+    }
+
+    private fun closePhoto() {
+        binding.photo.visibility = View.GONE
+        binding.photo.setImageDrawable(null)
+        photoResult = null
+        renderStatus()
+    }
+
     private fun renderStatus() {
         val s = stats
         binding.status.text =
@@ -105,11 +179,13 @@ class MainActivity : AppCompatActivity() {
                     appendLine("ball   ${s.ball?.let { "%.2f,%.2f (%.2f)".format(it.x, it.y, it.confidence) } ?: "-"}")
                 }
                 append("goal   $lastGoal")
+                photoResult?.let { append("\nphoto  $it") }
             }
     }
 
     private companion object {
         const val TAG = "Tracker"
+        const val EXTRA_PHOTO = "photo"
 
         // TODO: calibrate per table (tap goal corners on the preview) and persist.
         val DEFAULT_GOALS =
