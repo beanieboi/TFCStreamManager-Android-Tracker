@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tracker debug</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --fg: #eee; --dim: #888; --on: #2e9e4f; --warn: #c0392b; --btn: #333; }
+  body { margin: 0; padding: 12px; background: var(--bg); color: var(--fg); font: 15px system-ui, sans-serif; }
+  img { width: 100%; max-width: 640px; display: block; background: #000; border-radius: 6px; }
+  h2 { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .row .label { width: 80px; color: var(--dim); }
+  button { background: var(--btn); color: var(--fg); border: 0; border-radius: 6px; min-width: 44px; height: 44px;
+           padding: 0 12px; font-size: 16px; }
+  button.on { background: var(--on); }
+  button.warn { background: var(--warn); }
+  pre { background: #1b1b1b; padding: 8px; border-radius: 6px; white-space: pre-wrap; font-size: 13px; margin: 0; }
+  input { height: 40px; flex: 1; min-width: 0; font-size: 16px; background: #1b1b1b; color: var(--fg);
+          border: 1px solid #333; border-radius: 6px; padding: 0 8px; }
+  .ok { color: #6c6; } .bad { color: #e66; }
+</style>
+</head>
+<body>
+<img id="live" alt="live camera">
+
+<h2>Reading</h2>
+<pre id="reading">…</pre>
+
+<h2>Truth: what the stones show</h2>
+<div class="row"><span class="label">goals</span><span id="goals" class="row"></span></div>
+<div class="row" style="margin-top:6px"><span class="label">sets</span><span id="sets" class="row"></span></div>
+<div class="row" style="margin-top:6px"><span class="label">timeouts</span><span id="timeouts" class="row"></span></div>
+<div class="row" style="margin-top:10px">
+  <button id="hand" onclick="post('/hand?on=' + (state.hand ? 0 : 1))">hands on / moving</button>
+</div>
+
+<h2>Session</h2>
+<div class="row">
+  <button id="rec" onclick="post('/record?on=' + (state.recording ? 0 : 1))">record</button>
+  <button id="sweep" onclick="post('/sweep?on=' + (state.sweep ? 0 : 1))">sweep camera</button>
+  <button onclick="post('/calibrate')">calibrate</button>
+</div>
+<div class="row" style="margin-top:6px">
+  <input id="mark" placeholder="note, e.g. lights dimmed">
+  <button onclick="const m = document.getElementById('mark'); post('/mark?text=' + encodeURIComponent(m.value)); m.value = ''">note</button>
+</div>
+
+<h2>Phone</h2>
+<pre id="phone">…</pre>
+
+<script>
+let state = {};
+const counters = { goals: 7, sets: 3, timeouts: 2 };
+
+function post(url) { return fetch(url, { method: 'POST' }).then(refresh); }
+
+function buttons(name, max) {
+  const el = document.getElementById(name);
+  el.innerHTML = '';
+  const truth = state.truth || {};
+  for (const v of [...Array(max + 1).keys(), null]) {
+    const b = document.createElement('button');
+    b.textContent = v === null ? '?' : v;
+    if ((truth[name] ?? null) === v) b.className = 'on';
+    b.onclick = () => post('/truth?' + name + '=' + (v === null ? '' : v));
+    el.appendChild(b);
+  }
+}
+
+function cell(name) {
+  const got = state.reading[name], want = (state.truth || {})[name];
+  const mark = want == null || got == null ? '' : got === want ? ' ok' : ' WRONG';
+  return name.padEnd(9) + String(got ?? '?').padEnd(3) + (want == null ? '' : '(truth ' + want + ')') + mark;
+}
+
+function refresh() {
+  return fetch('/state').then(r => r.json()).then(s => {
+    state = s;
+    const r = s.reading;
+    document.getElementById('reading').textContent =
+      cell('goals') + '\n' + cell('sets') + '\n' + cell('timeouts') + '\n' +
+      'end      ' + (r.end ?? '?') + ' (settled ' + (s.end ?? '?') + ', score ' + r.endScore.toFixed(2) + ')\n' +
+      'conf     ' + r.confidence.toFixed(2) + (r.problems.length ? '\n' + r.problems.join('\n') : '');
+    document.getElementById('phone').textContent =
+      'recording ' + (s.recording ? s.session + '  ' + s.frames + ' frames, ' + s.rawFrames + ' raw, ' + s.skipped + ' skipped' : 'off') + '\n' +
+      'camera    zoom ' + (s.zoom ?? '?') + '  exposure ' + (s.exposure ?? '?') + (s.locked ? ' locked' : ' auto') +
+        (s.mode ? '  [' + s.mode + ']' : '') + '  ' + s.fps.toFixed(1) + ' fps\n' +
+      'calib     ' + s.calibration;
+    for (const [name, max] of Object.entries(counters)) buttons(name, max);
+    document.getElementById('hand').className = s.hand ? 'warn' : '';
+    document.getElementById('rec').className = s.recording ? 'warn' : '';
+    document.getElementById('rec').textContent = s.recording ? 'stop recording' : 'record';
+    document.getElementById('sweep').className = s.sweep ? 'on' : '';
+  }).catch(() => {});
+}
+
+setInterval(refresh, 500);
+setInterval(() => { document.getElementById('live').src = '/frame.jpg?t=' + Date.now(); }, 500);
+refresh();
+</script>
+</body>
+</html>
