@@ -1,6 +1,5 @@
 package com.tfcleipzig.tracker.detection
 
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -9,9 +8,12 @@ import kotlin.math.roundToInt
  * The counter is a horizontal bar of [Calibration.stones] stones on a rod. Scored stones sit at
  * the right end, the rest at the left end, and the free stretch of rod between them is the
  * spacer. In the frame the spacer is a dark slot with one thin bright line (the rod), while every
- * stone has a bright face or dot that also covers the rows above and below the rod. So per column
- * we take the brightness of the rows away from the rod, find the darkest run that is as wide as
- * the spacer, and count the stone pitches between its right edge and the right end of the bar.
+ * stone has a bright face or dot that is taller than the rod. So per column we take the brightest
+ * vertical run of [Calibration.dotHeight] rows: the run has to fit inside a dot, which a thin rod
+ * can't fill. Searching that run over a band a bit taller than the calibration means we never
+ * need to know which row the rod is on, so a mount that has moved a pixel or two still reads.
+ * Then we find the darkest stretch of columns as wide as the spacer and count the stone pitches
+ * between its right edge and the right end of the bar.
  *
  * Pure logic, no Android types, so it runs in JVM tests.
  */
@@ -31,9 +33,24 @@ class GoalCounterReader(
         val bottom: Float,
         val stones: Int = 7,
         val spacer: Float = 0.25f,
+        /** Height of a stone's bright dot as a fraction of bottom - top; must exceed the rod's. */
+        val dotHeight: Float = 0.5f,
+        /** Extra rows searched above and below the band, as a fraction of bottom - top. */
+        val verticalSlack: Float = 0.34f,
         /** Spacer must be at most this fraction as bright as the stones, or the read is rejected. */
         val maxSpacerContrast: Float = 0.5f,
-    )
+    ) {
+        companion object {
+            /** Measured on the 2026-11-15 test photo, scaled to the 640x480 analysis size. */
+            val TISCH_1_BOTTOM_RIGHT =
+                Calibration(
+                    left = 337.5f / 640,
+                    top = 369f / 480,
+                    right = 390.5f / 640,
+                    bottom = 375f / 480,
+                )
+        }
+    }
 
     data class Reading(
         val score: Int,
@@ -60,11 +77,22 @@ class GoalCounterReader(
         val rows = y1 - y0
         if (barWidth < 2 * c.stones || rows < 3) return null
 
-        // Rows in the outer thirds of the band: the rod is in the middle third.
-        val outerRows = (y0 until y1).filter { abs((it - y0 + 0.5f) / rows - 0.5f) > 1f / 6 }
+        // Per column: brightest run of `run` rows, scored by its darkest pixel. A dot fills the
+        // run, the rod (thinner than a dot) doesn't, wherever in the search band either one is.
+        val slack = (c.verticalSlack * rows).roundToInt()
+        val searchTop = (y0 - slack).coerceAtLeast(0)
+        val searchBottom = (y1 + slack).coerceAtMost(height)
+        val run = (c.dotHeight * rows).roundToInt().coerceIn(1, searchBottom - searchTop)
         val profile =
             FloatArray(barWidth) { i ->
-                outerRows.sumOf { (luma[it * rowStride + x0 + i].toInt() and 0xFF) }.toFloat() / outerRows.size
+                val x = x0 + i
+                var best = 0
+                for (top in searchTop..searchBottom - run) {
+                    var darkest = 255
+                    for (y in top until top + run) darkest = minOf(darkest, luma[y * rowStride + x].toInt() and 0xFF)
+                    best = maxOf(best, darkest)
+                }
+                best.toFloat()
             }
 
         // Darkest window of spacer width, via prefix sums.

@@ -36,8 +36,11 @@ class GoalCounterReaderTest {
         assertEquals(3, reading!!.score)
     }
 
-    /** The mount is not exact: the read must survive the calibration being a few pixels off. */
-    @org.junit.Ignore("A 1 px vertical shift puts the rod into the sampled rows; see docs/session.md")
+    /**
+     * The mount is not exact: the read must survive the calibration being a few pixels off.
+     * dy = -2 fails on this photo: the search band then reaches the brightly lit table edge above
+     * the bar, which outshines the spacer.
+     */
     @Test
     fun toleratesAShiftedCalibration() {
         val file = File(PHOTO)
@@ -65,14 +68,7 @@ class GoalCounterReaderTest {
     companion object {
         const val PHOTO = "src/test/resources/goal-counter/2026-11-15-16-14-14-886.jpg"
 
-        /** Measured on the 2026-11-15 photo scaled to the 640x480 analysis size. */
-        val TISCH_1_BOTTOM_RIGHT =
-            GoalCounterReader.Calibration(
-                left = 337.5f / 640,
-                top = 369f / 480,
-                right = 390.5f / 640,
-                bottom = 375f / 480,
-            )
+        val TISCH_1_BOTTOM_RIGHT = GoalCounterReader.Calibration.TISCH_1_BOTTOM_RIGHT
 
         /** Scales to 640x480 like the analysis stream and converts to BT.601 luma. */
         fun lumaAt640(src: BufferedImage): Triple<ByteArray, Int, Int> {
@@ -85,17 +81,7 @@ class GoalCounterReaderTest {
                 drawImage(src.getScaledInstance(w, h, java.awt.Image.SCALE_AREA_AVERAGING), 0, 0, null)
                 dispose()
             }
-            val luma = ByteArray(w * h)
-            for (y in 0 until h) {
-                for (x in 0 until w) {
-                    val p = scaled.getRGB(x, y)
-                    val r = (p shr 16) and 0xFF
-                    val g = (p shr 8) and 0xFF
-                    val b = p and 0xFF
-                    luma[y * w + x] = (0.299 * r + 0.587 * g + 0.114 * b).toInt().toByte()
-                }
-            }
-            return Triple(luma, w, h)
+            return Triple(lumaFromArgb(scaled.getRGB(0, 0, w, h, null, 0, w)), w, h)
         }
     }
 }
