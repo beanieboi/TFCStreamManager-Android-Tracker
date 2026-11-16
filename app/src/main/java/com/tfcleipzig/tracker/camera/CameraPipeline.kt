@@ -1,8 +1,13 @@
 package com.tfcleipzig.tracker.camera
 
 import android.content.Context
+import android.hardware.camera2.CaptureRequest
 import android.util.Log
 import android.util.Size
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -43,11 +48,25 @@ class CameraPipeline(
     /** Called on the main thread whenever the zoom is set. */
     var onZoom: (Zoom) -> Unit = {}
 
+    /** Exposure compensation (in [step] EV per index) and whether exposure and white balance are locked. */
+    data class Exposure(
+        val index: Int,
+        val range: IntRange,
+        val step: Float,
+        val locked: Boolean,
+    )
+
+    /** Called on the main thread whenever the exposure is set. */
+    var onExposure: (Exposure) -> Unit = {}
+
     /** [previewView] may be null to analyse without showing anything (tests, benchmarks). */
     fun start(
         previewView: PreviewView?,
         analyzer: ImageAnalysis.Analyzer,
         zoomRatio: Float = DEFAULT_ZOOM,
+        exposureIndex: Int = 0,
+        /** Called on the main thread once the camera is bound and set. */
+        onBound: () -> Unit = {},
     ) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
@@ -76,7 +95,53 @@ class CameraPipeline(
             provider.unbindAll()
             camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
             setZoom(zoomRatio)
+            setExposure(exposureIndex, locked = false)
+            onBound()
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    /** The zoom range, once bound. */
+    fun zoomRange(): ClosedFloatingPointRange<Float>? =
+        camera
+            ?.cameraInfo
+            ?.zoomState
+            ?.value
+            ?.let { it.minZoomRatio..it.maxZoomRatio }
+
+    /** The exposure compensation range, once bound; null if the camera has none. */
+    fun exposureRange(): IntRange? =
+        camera
+            ?.cameraInfo
+            ?.exposureState
+            ?.takeIf { it.isExposureCompensationSupported }
+            ?.exposureCompensationRange
+            ?.let { it.lower..it.upper }
+
+    /**
+     * Sets exposure compensation, clamped to the camera's range, and locks or unlocks auto
+     * exposure and white balance at what they currently are. Lock only after the exposure has
+     * settled at the new compensation. Call on the main thread; null before [start] bound.
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    fun setExposure(
+        index: Int,
+        locked: Boolean,
+    ): Exposure? {
+        val camera = camera ?: return null
+        val state = camera.cameraInfo.exposureState
+        val range = if (state.isExposureCompensationSupported) state.exposureCompensationRange.let { it.lower..it.upper } else 0..0
+        val exposure = Exposure(index.coerceIn(range), range, state.exposureCompensationStep.toFloat(), locked)
+        if (state.isExposureCompensationSupported) camera.cameraControl.setExposureCompensationIndex(exposure.index)
+        Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(
+            CaptureRequestOptions
+                .Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, locked)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, locked)
+                .build(),
+        )
+        Log.i(TAG, "exposure ${exposure.index} (${exposure.index * exposure.step} EV), ${if (locked) "locked" else "auto"}")
+        onExposure(exposure)
+        return exposure
     }
 
     /** Sets the zoom, clamped to the camera's range; call on the main thread. Null before [start] bound. */
