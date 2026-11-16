@@ -13,6 +13,13 @@ enum class Side {
     AWAY,
 }
 
+/**
+ * The two ends of a table, one tracker phone each. Told apart by the counter colours: at end A
+ * the goal bar has black stones (one green) and the set bar green ones, at end B the reverse.
+ * The reference photos in `testdata/` are named after them (`Side A`, `Side B`).
+ */
+enum class TableEnd { A, B }
+
 /** Ball position in normalized frame coordinates (0..1, origin top-left, analysis orientation). */
 data class Ball(
     val x: Float,

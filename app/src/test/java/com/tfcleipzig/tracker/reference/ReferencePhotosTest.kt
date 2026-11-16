@@ -1,5 +1,6 @@
 package com.tfcleipzig.tracker.reference
 
+import com.tfcleipzig.tracker.detection.TableEnd
 import com.tfcleipzig.tracker.detection.TableEndReader
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -27,8 +28,10 @@ class ReferencePhotosTest {
         val correct = mutableMapOf<Counter, Int>().withDefault { 0 }
         val wrong = mutableMapOf<Counter, Int>().withDefault { 0 }
         val timesUs = mutableListOf<Long>()
+        var endsCorrect = 0
+        var endsWrong = 0
         val report = StringBuilder()
-        report.appendLine("%-42s %-9s %-9s %-9s %6s  %s".format("photo", "goals", "sets", "timeouts", "us", "bars"))
+        report.appendLine("%-42s %-9s %-9s %-9s %-12s %6s  %s".format("photo", "goals", "sets", "timeouts", "end", "us", "bars"))
 
         for ((photo, file) in photos) {
             val frame = TestFrames.frame(TestFrames.scaled(file))
@@ -56,8 +59,23 @@ class ReferencePhotosTest {
                         else -> "$want->$got !"
                     }
                 }
+            val wantEnd = TableEnd.valueOf(photo.side.removePrefix("Side ").trim())
+            when (reading.end) {
+                wantEnd -> endsCorrect++
+                null -> Unit
+                else -> endsWrong++
+            }
             report.appendLine(
-                "%-42s %-9s %-9s %-9s %6d  %s %s".format(photo.path, cells[0], cells[1], cells[2], us, reading.setBar, reading.goalBar),
+                "%-42s %-9s %-9s %-9s %-12s %6d  %s %s".format(
+                    photo.path,
+                    cells[0],
+                    cells[1],
+                    cells[2],
+                    (if (reading.end == wantEnd) "$wantEnd ok" else "$wantEnd->${reading.end ?: "?"}") + " %+.2f".format(reading.endScore),
+                    us,
+                    reading.setBar,
+                    reading.goalBar,
+                ),
             )
             if (VERBOSE) {
                 reading.setBar?.let { report.appendLine("    set  ${it.describe()}") }
@@ -70,6 +88,7 @@ class ReferencePhotosTest {
         for (c in Counter.entries) {
             report.appendLine("%-9s correct %2d/%d  wrong %2d".format(c.name.lowercase(), correct.getValue(c), n, wrong.getValue(c)))
         }
+        report.appendLine("end       correct %2d/%d  wrong %2d".format(endsCorrect, n, endsWrong))
         val sorted = timesUs.sorted()
         report.appendLine("read time (JVM): median %d us, max %d us".format(sorted[n / 2], sorted.last()))
         println(report)
@@ -80,6 +99,7 @@ class ReferencePhotosTest {
             assertTrue("$c correct ${correct.getValue(c)} < ${MIN_CORRECT.getValue(c)}", correct.getValue(c) >= MIN_CORRECT.getValue(c))
             assertTrue("$c wrong ${wrong.getValue(c)} > ${MAX_WRONG.getValue(c)}", wrong.getValue(c) <= MAX_WRONG.getValue(c))
         }
+        assertTrue("end correct $endsCorrect < $n", endsCorrect == n)
     }
 
     private companion object {

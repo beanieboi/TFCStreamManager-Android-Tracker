@@ -1,5 +1,6 @@
 package com.tfcleipzig.tracker.reference
 
+import com.tfcleipzig.tracker.detection.TableEnd
 import com.tfcleipzig.tracker.detection.TableEndReader
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -36,6 +37,10 @@ class ReferenceVariantsTest {
 
         val variants =
             listOf(
+                // Baseline and milder exposure steps, to see the confidence follow the exposure.
+                Variant("as taken", 78) { img, _ -> img },
+                Variant("darker x0.8", 70) { img, _ -> tone(img, 0.8f) },
+                Variant("brighter x1.2", 40) { img, _ -> tone(img, 1.2f) },
                 Variant("darker x0.6", 75) { img, _ -> tone(img, 0.6f) },
                 Variant("brighter x1.4", 40) { img, _ -> tone(img, 1.4f) },
                 Variant("rolled +3 deg", 72) { img, _ -> transform(img) { rotate(Math.toRadians(3.0), W / 2.0, H / 2.0) } },
@@ -57,6 +62,9 @@ class ReferenceVariantsTest {
         val unread = IntArray(variants.size)
         val wrong = IntArray(variants.size)
         val wrongs = mutableListOf<String>()
+        val ends = IntArray(variants.size)
+        val confidence = DoubleArray(variants.size)
+        val endsWrong = mutableListOf<String>()
 
         for ((photo, file) in photos) {
             val big = scaledTo(ImageIO.read(file), 2 * W, 2 * H)
@@ -64,6 +72,13 @@ class ReferenceVariantsTest {
             for ((i, v) in variants.withIndex()) {
                 val img = scaledTo(v.apply(big, clean), W, H)
                 val r = reader.read(TestFrames.frame(img))
+                confidence[i] += r.confidence.toDouble()
+                val wantEnd = TableEnd.valueOf(photo.side.removePrefix("Side ").trim())
+                when (r.end) {
+                    wantEnd -> ends[i]++
+                    null -> Unit
+                    else -> endsWrong += "${v.name}: ${photo.path} -> end ${r.end} (%+.2f)".format(r.endScore)
+                }
                 val e = photo.expected
                 for ((want, got) in listOf(e.score to r.goals, e.sets to r.sets, e.timeouts to r.timeouts)) {
                     when (got) {
@@ -80,15 +95,28 @@ class ReferenceVariantsTest {
             }
         }
 
-        val report = StringBuilder("%-18s %8s %7s %6s\n".format("variant", "correct", "unread", "wrong"))
+        val report = StringBuilder("%-18s %8s %7s %6s %6s %5s\n".format("variant", "correct", "unread", "wrong", "end", "conf"))
         for ((i, v) in variants.withIndex()) {
-            report.appendLine("%-18s %4d/%-3d %7d %6d".format(v.name, correct[i], 3 * photos.size, unread[i], wrong[i]))
+            report.appendLine(
+                "%-18s %4d/%-3d %7d %6d %3d/%d %5.2f".format(
+                    v.name,
+                    correct[i],
+                    3 * photos.size,
+                    unread[i],
+                    wrong[i],
+                    ends[i],
+                    photos.size,
+                    confidence[i] / photos.size,
+                ),
+            )
         }
         wrongs.forEach { report.appendLine(it) }
+        endsWrong.forEach { report.appendLine(it) }
         println(report)
         File("build/reports").mkdirs()
         File("build/reports/reference-variants.txt").writeText(report.toString())
 
+        assertTrue("wrong ends:\n${endsWrong.joinToString("\n")}", endsWrong.isEmpty())
         assertTrue("more wrong readings than the known $KNOWN_WRONG:\n${wrongs.joinToString("\n")}", wrongs.size <= KNOWN_WRONG)
         for ((i, v) in variants.withIndex()) {
             assertTrue("${v.name}: ${correct[i]} correct < ${v.minCorrect}", correct[i] >= v.minCorrect)

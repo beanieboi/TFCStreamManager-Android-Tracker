@@ -1,5 +1,7 @@
 package com.tfcleipzig.tracker.detection
 
+import kotlin.math.abs
+
 /**
  * Reads the counters at one end of the table from one frame: goals, sets and timeouts.
  *
@@ -29,6 +31,15 @@ class TableEndReader {
         val goalBar: BarScan.Bar?,
         /** Why a count is null, for logs and the HUD. */
         val problems: List<String> = emptyList(),
+        /** Which end of the table this is, from the bar colours; null when unclear. */
+        val end: TableEnd? = null,
+        /** Set bar minus goal bar greenness, relative: near +1 at end A, near -1 at end B. */
+        val endScore: Float = 0f,
+        /**
+         * 0..1, how sure this frame is: counters read, how well the stones fit the bars, how
+         * clearly the bar colours differ. For comparing camera settings, not a probability.
+         */
+        val confidence: Float = 0f,
     )
 
     fun read(frame: Frame): Reading {
@@ -48,13 +59,14 @@ class TableEndReader {
         val setBar = refine(kinds, bars[0], SET_LENGTH, 5)
         val goalBar = refine(kinds, bars[1], GOAL_LENGTH, 7)
         val problems = mutableListOf<String>()
+        val (end, endScore) = end(frame, line, setBar, goalBar)
 
         // Both bars are the same stones at the same distance. A bar measured too long (merged
         // with something) or too short (cut off, partly hidden) shows up as a pitch mismatch.
         val ratio = setBar.pitch / goalBar.pitch
         if (ratio !in MIN_PITCH_RATIO..MAX_PITCH_RATIO) {
             problems += "pitch set/goal %.2f".format(ratio)
-            return Reading(null, null, null, line, setBar, goalBar, problems)
+            return Reading(null, null, null, line, setBar, goalBar, problems, end, endScore)
         }
 
         val goals =
@@ -78,7 +90,62 @@ class TableEndReader {
             }
         val sets = set?.stonesLeftOfRod()?.takeIf { it <= 3 }
         val timeouts = set?.stonesRightOfRod()?.takeIf { it <= 2 }?.let { 2 - it }
-        return Reading(goals, sets, timeouts, line, setBar, goalBar, problems)
+        val read = listOf(goals, sets, timeouts).count { it != null } / 3f
+        val costs = listOfNotNull(goalBar.cost.takeIf { goals != null }, setBar.cost.takeIf { set != null })
+        val fit = if (costs.isEmpty()) 0f else 1f - costs.average().toFloat() / BarScan.MAX_ALLOCATION_COST
+        val colour = (abs(endScore) / CLEAR_END_SCORE).coerceAtMost(1f)
+        val confidence = read * (0.5f + 0.5f * fit) * (0.5f + 0.5f * colour)
+        return Reading(goals, sets, timeouts, line, setBar, goalBar, problems, end, endScore, confidence)
+    }
+
+    /**
+     * End A has mostly green stones on the set bar and mostly black ones on the goal bar, end B the
+     * reverse. Compares how green the stones on the two bars are in the same frame (mean green
+     * chroma, so glare that turns a green face white to [BarScan.classify] only weakens it).
+     * Independent of the counts, so it works while a count is unreadable.
+     */
+    private fun end(
+        frame: Frame,
+        line: StoneLine.Line,
+        setBar: BarScan.Bar,
+        goalBar: BarScan.Bar,
+    ): Pair<TableEnd?, Float> {
+        val set = greenness(frame, line, setBar)
+        val goal = greenness(frame, line, goalBar)
+        val top = maxOf(set, goal)
+        if (top < MIN_GREENNESS) return null to 0f
+        val score = (set - goal) / top
+        val end =
+            when {
+                score >= MIN_GREEN_CONTRAST -> TableEnd.A
+                score <= -MIN_GREEN_CONTRAST -> TableEnd.B
+                else -> null
+            }
+        return end to score
+    }
+
+    /** Mean green chroma (how far both U and V are below neutral) over a bar's stone runs. */
+    private fun greenness(
+        frame: Frame,
+        line: StoneLine.Line,
+        bar: BarScan.Bar,
+    ): Float {
+        val half = line.stoneSize / 3
+        var sum = 0L
+        var n = 0
+        for (run in bar.runs) {
+            if (!run.isStone) continue
+            for (x in run.start until run.end step 2) {
+                val cx = (x / 2).coerceIn(0, frame.width / 2 - 1)
+                val c = line.centerAt(x).toInt()
+                for (y in c - half..c + half step 2) {
+                    val cy = (y / 2).coerceIn(0, frame.height / 2 - 1)
+                    sum += minOf(128 - frame.u(cx, cy), 128 - frame.v(cx, cy)).coerceAtLeast(0)
+                    n++
+                }
+            }
+        }
+        return if (n == 0) 0f else sum.toFloat() / n
     }
 
     /**
@@ -132,6 +199,15 @@ class TableEndReader {
     }
 
     private companion object {
+        /** Below this mean green chroma on both bars there's no colour to go by (dark, washed out). */
+        const val MIN_GREENNESS = 2f
+
+        /** [Reading.endScore] needed to call the end; tuned on the reference photos. */
+        const val MIN_GREEN_CONTRAST = 0.4f
+
+        /** [Reading.endScore] that counts as fully clear colours for [Reading.confidence]. */
+        const val CLEAR_END_SCORE = 0.6f
+
         /** Bar interiors in stone pitches, measured on the 2026-11-16 reference photos. */
         const val GOAL_LENGTH = 8.94f
         const val SET_LENGTH = 9.3f
