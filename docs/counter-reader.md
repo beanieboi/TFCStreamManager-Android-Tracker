@@ -32,12 +32,17 @@ the reverse), so nothing relies on one colour scheme.
 
 ## Setup per phone
 
-`TrackerSettings` (kept across restarts): table end (A/B), the team that end's goal bar counts
-(home/away), zoom. Set with the HUD buttons or over adb:
+`TrackerSettings` (kept across restarts): the team the end's goal bar counts (home/away), zoom.
+Set with the HUD buttons or over adb:
 
 ```
-adb shell am start -n com.tfcleipzig.tracker/.MainActivity --es end B --es side away --ef zoom 2.3
+adb shell am start -n com.tfcleipzig.tracker/.MainActivity --es side away --ef zoom 2.3
 ```
+
+The table end is detected, not set: at end A the set bar is mostly green and the goal bar mostly
+black, at end B the reverse. Each reading compares the mean green chroma of the two bars
+(`Reading.end`, `endScore` about ±0.5–0.7 on the reference photos, threshold 0.4), and
+`EndVote` settles once 25 of the last 30 frames with a guess agree (about 2 s after start).
 
 The HUD's `bars` line shows the pitch in pixels and the free margin left of the set bar and right
 of the goal bar, in pitches. Digital zoom crops around the frame centre, so aim the counters at

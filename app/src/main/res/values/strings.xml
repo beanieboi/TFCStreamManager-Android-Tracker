@@ -5,6 +5,6 @@
     <string name="photo_description">Picked photo with the counter area marked</string>
     <string name="zoom_out">zoom −</string>
     <string name="zoom_in">zoom +</string>
-    <string name="end_button">end %1$s</string>
+    <string name="calibrate">calibrate</string>
     <string name="side_button">%1$s</string>
 </resources>

@@ -56,12 +56,13 @@
         </LinearLayout>
 
         <Button
-            android:id="@+id/end"
+            android:id="@+id/side"
             style="@style/SetupButton" />
 
         <Button
-            android:id="@+id/side"
-            style="@style/SetupButton" />
+            android:id="@+id/calibrate"
+            style="@style/SetupButton"
+            android:text="@string/calibrate" />
 
         <Button
             android:id="@+id/pickPhoto"
