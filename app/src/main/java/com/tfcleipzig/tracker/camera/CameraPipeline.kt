@@ -3,6 +3,7 @@ package com.tfcleipzig.tracker.camera
 import android.content.Context
 import android.util.Log
 import android.util.Size
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -30,6 +31,17 @@ class CameraPipeline(
 ) {
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
+
+    /** Zoom the camera runs at and its range, once bound; for the HUD. */
+    data class Zoom(
+        val ratio: Float,
+        val min: Float,
+        val max: Float,
+    )
+
+    /** Called on the main thread whenever the zoom is set. */
+    var onZoom: (Zoom) -> Unit = {}
 
     /** [previewView] may be null to analyse without showing anything (tests, benchmarks). */
     fun start(
@@ -62,17 +74,28 @@ class CameraPipeline(
                     .also { it.setAnalyzer(analysisExecutor, analyzer) }
 
             provider.unbindAll()
-            val camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
-            val zoom = camera.cameraInfo.zoomState.value
-            val ratio = zoom?.let { zoomRatio.coerceIn(it.minZoomRatio, it.maxZoomRatio) } ?: zoomRatio
-            camera.cameraControl.setZoomRatio(ratio)
-            Log.i(TAG, "camera bound, zoom $ratio (range ${zoom?.minZoomRatio}..${zoom?.maxZoomRatio})")
+            camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
+            setZoom(zoomRatio)
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    /** Sets the zoom, clamped to the camera's range; call on the main thread. Null before [start] bound. */
+    fun setZoom(ratio: Float): Zoom? {
+        val camera = camera ?: return null
+        val state = camera.cameraInfo.zoomState.value
+        val min = state?.minZoomRatio ?: 1f
+        val max = state?.maxZoomRatio ?: ratio
+        val zoom = Zoom(ratio.coerceIn(min, max), min, max)
+        camera.cameraControl.setZoomRatio(zoom.ratio)
+        Log.i(TAG, "zoom ${zoom.ratio} (range $min..$max)")
+        onZoom(zoom)
+        return zoom
     }
 
     /** Unbinds the camera; call on the main thread. [start] binds it again. */
     fun stop() {
         provider?.unbindAll()
+        camera = null
     }
 
     fun shutdown() {
