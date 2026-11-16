@@ -4,6 +4,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.tfcleipzig.tracker.detection.Ball
 import com.tfcleipzig.tracker.detection.BallDetector
+import com.tfcleipzig.tracker.detection.Frame
 import com.tfcleipzig.tracker.detection.GoalDetector
 import com.tfcleipzig.tracker.detection.TableEndReader
 
@@ -15,6 +16,8 @@ class FrameAnalyzer(
     private val detector: BallDetector,
     private val goals: GoalDetector,
     private val counters: TableEndReader = TableEndReader(),
+    /** Every frame with its reading and read time, while the frame's buffers are valid (recording). */
+    private val onFrame: (Frame, TableEndReader.Reading, Float) -> Unit = { _, _, _ -> },
     private val onStats: (Stats) -> Unit,
 ) : ImageAnalysis.Analyzer {
     data class Stats(
@@ -47,6 +50,7 @@ class FrameAnalyzer(
             val t1 = System.nanoTime()
             val reading = counters.read(frame)
             val t2 = System.nanoTime()
+            onFrame(frame, reading, (t2 - t1) / 1e6f)
             val ball = detector.detect(it)
             val t3 = System.nanoTime()
             goals.update(ball, it.imageInfo.timestamp / 1_000_000)
