@@ -17,10 +17,10 @@ import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.camera.FrameAnalyzer
 import com.tfcleipzig.tracker.databinding.ActivityMainBinding
 import com.tfcleipzig.tracker.debug.PhotoCheck
-import com.tfcleipzig.tracker.detection.GoalCounterReader
 import com.tfcleipzig.tracker.detection.GoalDetector
 import com.tfcleipzig.tracker.detection.NoopBallDetector
 import com.tfcleipzig.tracker.detection.Side
+import com.tfcleipzig.tracker.detection.TableEndReader
 import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     /** Debug: result for the photo on screen, or null while the live feed shows. */
     private var photoResult: String? = null
 
-    private val photoCheck = PhotoCheck(GoalCounterReader.Calibration.TISCH_1_BOTTOM_RIGHT)
+    private val photoCheck = PhotoCheck()
 
     private val pickPhoto =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -150,9 +150,9 @@ class MainActivity : AppCompatActivity() {
                 .onSuccess { r ->
                     binding.photo.setImageBitmap(r.image)
                     binding.photo.visibility = View.VISIBLE
-                    val reading = r.reading?.let { "score ${it.score}  (confidence %.2f)".format(it.confidence) } ?: "no read"
                     val aspect = if (r.sourceWidth * 3 != r.sourceHeight * 4) "  [not 4:3 landscape, squeezed]" else ""
-                    photoResult = "$reading\n       ${r.sourceWidth}x${r.sourceHeight}$aspect\n       tap photo to go back to live"
+                    photoResult =
+                        "${describe(r.reading)}\n       ${r.sourceWidth}x${r.sourceHeight}$aspect\n       tap photo to go back to live"
                     Log.i(TAG, "photo $name: ${r.reading}")
                 }.onFailure {
                     Log.w(TAG, "photo $name failed", it)
@@ -175,13 +175,20 @@ class MainActivity : AppCompatActivity() {
             buildString {
                 appendLine("server ${discovery.server.value ?: "searching…"}")
                 if (s != null) {
-                    appendLine("frame  ${s.width}x${s.height}  %.1f fps  detect %d ms".format(s.fps, s.detectMs))
-                    appendLine("ball   ${s.ball?.let { "%.2f,%.2f (%.2f)".format(it.x, it.y, it.confidence) } ?: "-"}")
+                    appendLine("frame  ${s.width}x${s.height}  %.1f fps".format(s.fps))
+                    appendLine(
+                        "time   capture %.0f + copy %.1f + read %.1f = %.0f ms".format(s.captureAgeMs, s.copyMs, s.readMs, s.totalMs),
+                    )
+                    appendLine("count  ${describe(s.counters)}")
                 }
                 append("goal   $lastGoal")
                 photoResult?.let { append("\nphoto  $it") }
             }
     }
+
+    private fun describe(r: TableEndReader.Reading): String =
+        "goals ${r.goals ?: "?"}  sets ${r.sets ?: "?"}  timeouts ${r.timeouts ?: "?"}" +
+            if (r.problems.isEmpty()) "" else "\n       " + r.problems.joinToString("\n       ")
 
     private companion object {
         const val TAG = "Tracker"

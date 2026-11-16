@@ -10,6 +10,9 @@ coroutines = "1.11.0"
 kotlinxSerializationJson = "1.13.0"
 okhttp = "5.5.1"
 junit = "4.13.2"
+androidxTestRunner = "1.6.2"
+androidxTestRules = "1.6.1"
+androidxTestExtJunit = "1.2.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -23,6 +26,9 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestRules" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
