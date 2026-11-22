@@ -153,6 +153,7 @@ class MainActivity : AppCompatActivity() {
             exposure = it
             renderStatus()
         }
+        takeHoldExtra(intent)
         calibrateWhenBound = takeCalibrateExtra(intent)
         recorder = Recorder(File(getExternalFilesDir(null), "recordings"), "${Build.MANUFACTURER} ${Build.MODEL}")
         startDebugServer()
@@ -296,6 +297,7 @@ class MainActivity : AppCompatActivity() {
             camera.setZoom(settings.zoom)?.let { settings.zoom = it.ratio }
             renderSetup()
         }
+        takeHoldExtra(intent)
         if (takeCalibrateExtra(intent)) startCalibration()
         checkPhotoExtra(intent)
     }
@@ -307,6 +309,29 @@ class MainActivity : AppCompatActivity() {
         return applied.isNotEmpty()
     }
 
+    /**
+     * Hold: the phone isn't at its table (at home, on the bench), so nothing it sees may change the
+     * saved calibration. `adb shell am start -n com.tfcleipzig.tracker/.MainActivity --ez hold true`
+     */
+    private fun takeHoldExtra(intent: Intent) {
+        if (!intent.hasExtra(EXTRA_HOLD)) return
+        setHold(intent.getBooleanExtra(EXTRA_HOLD, false))
+        intent.removeExtra(EXTRA_HOLD)
+    }
+
+    /** Hold on: no calibration, no lost-counters recalibration, no exposure tracking. Main thread. */
+    private fun setHold(on: Boolean) {
+        settings.hold = on
+        Log.i(TAG, "hold ${if (on) "on" else "off"}")
+        if (on) {
+            calibrator?.let { calibration = "held: calibration stopped" }
+            calibrator = null
+            stopSweep(restore = false)
+            if (manual == null) useSavedExposure()
+        }
+        renderStatus()
+    }
+
     /** `adb shell am start -n com.tfcleipzig.tracker/.MainActivity --ez calibrate true` */
     private fun takeCalibrateExtra(intent: Intent): Boolean {
         val calibrate = intent.getBooleanExtra(EXTRA_CALIBRATE, false)
@@ -316,6 +341,12 @@ class MainActivity : AppCompatActivity() {
 
     /** Camera bound with the saved zoom: calibrate, or set the saved exposure and keep it tracking. */
     private fun onCameraBound() {
+        if (settings.hold) {
+            calibrateWhenBound = false
+            calibration = "held"
+            useSavedExposure()
+            return
+        }
         if (calibrateWhenBound || !settings.calibrated) {
             calibrateWhenBound = false
             startCalibration()
@@ -334,6 +365,11 @@ class MainActivity : AppCompatActivity() {
 
     /** Finds zoom and exposure for the counters (see [Calibrator]); replaces a running one. */
     private fun startCalibration() {
+        if (settings.hold) {
+            calibration = "held: not calibrating (hold is on)"
+            Log.i(TAG, "calibration skipped, hold is on")
+            return
+        }
         stopSweep(restore = false)
         manual = null
         tracker = null
@@ -419,6 +455,9 @@ class MainActivity : AppCompatActivity() {
                 ) = runOnUiThread { setManual(exposureNs, iso) }
 
                 override val focus get() = focusStatus
+                override val hold get() = settings.hold
+
+                override fun hold(on: Boolean) = runOnUiThread { setHold(on) }
 
                 override fun focus(
                     x: Float?,
@@ -585,13 +624,13 @@ class MainActivity : AppCompatActivity() {
                 } else if (sweep == null) {
                     // Only readings at the calibrated settings count; a sweep tries bad ones on purpose.
                     // While exposure is set by hand, a bad value must not start a calibration.
-                    if (lost.update(s.counters) && manual == null) {
+                    if (lost.update(s.counters) && manual == null && !settings.hold) {
                         Log.i(TAG, "counters lost for $LOST_FRAMES readings, recalibrating")
                         runOnUiThread { if (calibrator == null && sweep == null) startCalibration() }
                     } else {
                         scoreSync.update(s.counters)?.let(::sendScore)
                         val t = tracker
-                        t?.update(s.counters.stoneLuma)?.let { e -> runOnUiThread { followLight(t, e) } }
+                        if (!settings.hold) t?.update(s.counters.stoneLuma)?.let { e -> runOnUiThread { followLight(t, e) } }
                     }
                 }
                 stats = s
@@ -599,7 +638,7 @@ class MainActivity : AppCompatActivity() {
             }
         // No preview: nobody looks at the phone during operations, and the stream and its drawing
         // cost a camera stream and the GPU. The debug page shows the picture.
-        camera.start(null, analyzer, settings.zoom) { onCameraBound() }
+        camera.start(analyzer, settings.zoom) { onCameraBound() }
     }
 
     /**
@@ -708,6 +747,7 @@ class MainActivity : AppCompatActivity() {
         val how =
             when {
                 hand != null -> "by hand"
+                settings.hold -> "held"
                 calibrator != null -> "calibrating"
                 sweep != null -> "sweep"
                 tracker != null -> "tracking"
@@ -732,7 +772,7 @@ class MainActivity : AppCompatActivity() {
                         "  exposure %+.1f EV %s".format(it.index * it.step, if (it.locked) "locked" else "auto")
                     } ?: "",
                 )
-                appendLine("calib  ${calibrator?.status ?: calibration}")
+                appendLine("calib  ${if (settings.hold) "HOLD  " else ""}${calibrator?.status ?: calibration}")
                 appendLine("sync   $syncStatus  report $reportStatus")
                 appendLine("light  ${exposureInfo()}")
                 appendLine("power  $powerStatus")
@@ -790,6 +830,7 @@ class MainActivity : AppCompatActivity() {
         const val ZOOM_STEP = 0.05f
         const val EXTRA_PHOTO = "photo"
         const val EXTRA_CALIBRATE = "calibrate"
+        const val EXTRA_HOLD = "hold"
         const val LOST_FRAMES = 3
         const val SYNC_RETRY_MS = 2000L
 
@@ -799,11 +840,11 @@ class MainActivity : AppCompatActivity() {
         /** Focus region: both bars' span times this. */
         const val FOCUS_MARGIN = 1.3f
 
-        /** Readings in a row that must agree before a score is sent: about 0.8 s at 5 readings a second. */
+        /** Readings in a row that must agree before a score is sent: two bursts (2 read per burst, one every 2 s), so 2–4 s. */
         const val SYNC_STEADY_READINGS = 4
 
-        /** Reading rate outside calibration: 5 a second is plenty for a score and keeps the phone cool. */
-        const val READ_INTERVAL_MS = 200L
+        /** Frames closer than this are dropped outside calibration; the camera's bursts come faster. */
+        const val READ_INTERVAL_MS = 0L
 
         /** How long a touch lights the dark screen. */
         const val SCREEN_LIT_MS = 60_000L

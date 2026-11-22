@@ -58,7 +58,7 @@ class CameraLatencyTest {
 
         instrumentation.runOnMainSync {
             owner.registry.currentState = Lifecycle.State.RESUMED
-            pipeline.start(null, analyzer)
+            pipeline.start(analyzer)
         }
         val finished = done.await(TIMEOUT_S, TimeUnit.SECONDS)
         instrumentation.runOnMainSync {

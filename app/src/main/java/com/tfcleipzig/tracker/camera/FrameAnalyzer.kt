@@ -1,7 +1,5 @@
 package com.tfcleipzig.tracker.camera
 
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
 import com.tfcleipzig.tracker.detection.Ball
 import com.tfcleipzig.tracker.detection.BallDetector
 import com.tfcleipzig.tracker.detection.CounterReader
@@ -33,7 +31,7 @@ class FrameAnalyzer(
     /** Every frame, turned, with its reading and read time, while the frame's buffers are valid (recording). */
     private val onFrame: (Frame, TableEndReader.Reading, Float) -> Unit = { _, _, _ -> },
     private val onStats: (Stats) -> Unit,
-) : ImageAnalysis.Analyzer {
+) : CameraPipeline.FrameSink {
     data class Stats(
         val fps: Float,
         /** The frame as read, i.e. turned by [rotation]. */
@@ -45,7 +43,7 @@ class FrameAnalyzer(
         val rotation: Rotation,
         /** Sensor capture until the analyzer got the frame. */
         val captureAgeMs: Float,
-        /** Copying the YUV planes. */
+        /** Copying the YUV planes: done by [CameraPipeline] before the frame gets here, so 0. */
         val copyMs: Float,
         /** [TableEndReader.read], all rotations. */
         val readMs: Float,
@@ -58,16 +56,18 @@ class FrameAnalyzer(
         val readings: Map<Rotation, TableEndReader.Reading>,
     )
 
-    private val copier = FrameCopier()
     private var lastReadNs = 0L
     private val rotator = FrameRotator()
     private var windowStartNs = 0L
     private var framesInWindow = 0
     private var fps = 0f
 
-    override fun analyze(image: ImageProxy) {
-        image.use {
-            val age = captureAgeMs(it)
+    override fun onFrame(
+        frame: Frame,
+        timestampNs: Long,
+    ) {
+        run {
+            val age = captureAgeMs(timestampNs)
             val t0 = System.nanoTime()
             framesInWindow++
             if (windowStartNs == 0L) windowStartNs = t0
@@ -78,7 +78,6 @@ class FrameAnalyzer(
             }
             if (t0 - lastReadNs < minIntervalMs() * 1_000_000) return
             lastReadNs = t0
-            val frame = copier.copy(it)
             val t1 = System.nanoTime()
             val asked = rotations().ifEmpty { listOf(Rotation.R0) }
             val readings = LinkedHashMap<Rotation, TableEndReader.Reading>()
@@ -91,16 +90,16 @@ class FrameAnalyzer(
             val reading = readings.getValue(asked[0])
             val t2 = System.nanoTime()
             onFrame(main, reading, (t2 - t1) / 1e6f)
-            val ball = detector.detect(it)
+            val ball = detector.detect(main)
             val t3 = System.nanoTime()
-            goals.update(ball, it.imageInfo.timestamp / 1_000_000)
+            goals.update(ball, timestampNs / 1_000_000)
             onStats(
                 Stats(
                     fps = fps,
                     width = main.width,
                     height = main.height,
-                    rawWidth = it.width,
-                    rawHeight = it.height,
+                    rawWidth = frame.width,
+                    rawHeight = frame.height,
                     rotation = asked[0],
                     captureAgeMs = age,
                     copyMs = (t1 - t0) / 1e6f,

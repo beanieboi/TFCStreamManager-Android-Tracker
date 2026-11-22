@@ -1,13 +1,11 @@
 package com.tfcleipzig.tracker.detection
 
-import androidx.camera.core.ImageProxy
-
 /**
- * Finds the ball in one camera frame. Runs on the analysis thread; must not keep [image]
+ * Finds the ball in one camera frame. Runs on the analysis thread; must not keep [frame]
  * after returning. Return null when no ball is visible.
  */
 fun interface BallDetector {
-    fun detect(image: ImageProxy): Ball?
+    fun detect(frame: Frame): Ball?
 }
 
 /**
@@ -16,5 +14,5 @@ fun interface BallDetector {
  * - a small LiteRT (TFLite) model, NNAPI/GPU delegate where the SoC supports it
  */
 class NoopBallDetector : BallDetector {
-    override fun detect(image: ImageProxy): Ball? = null
+    override fun detect(frame: Frame): Ball? = null
 }

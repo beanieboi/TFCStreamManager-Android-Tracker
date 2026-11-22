@@ -58,6 +58,15 @@ class TrackerSettings(
         get() = prefs.getString(KEY_ROTATION, null)?.let { runCatching { Rotation.valueOf(it) }.getOrNull() } ?: Rotation.R0
         set(value) = prefs.edit { putString(KEY_ROTATION, value.name) }
 
+    /**
+     * The phone isn't at its table (at home, on the bench): no calibration and no exposure
+     * tracking, so what it sees can't change the saved settings. Set from the debug page or with
+     * the `hold` extra.
+     */
+    var hold: Boolean
+        get() = prefs.getBoolean(KEY_HOLD, false)
+        set(value) = prefs.edit { putBoolean(KEY_HOLD, value) }
+
     /** Requested zoom; the camera clamps it to its range. */
     var zoom: Float
         get() = prefs.getFloat(KEY_ZOOM, CameraPipeline.DEFAULT_ZOOM)
@@ -99,5 +108,6 @@ class TrackerSettings(
         const val KEY_STONE_LUMA = "stone_luma"
         const val KEY_CALIBRATED = "calibrated"
         const val KEY_ROTATION = "rotation"
+        const val KEY_HOLD = "hold"
     }
 }

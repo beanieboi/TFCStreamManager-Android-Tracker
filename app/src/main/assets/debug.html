@@ -62,6 +62,7 @@
   <button id="rec" onclick="post('/record?on=' + (state.recording ? 0 : 1))">record</button>
   <button id="sweep" onclick="post('/sweep?on=' + (state.sweep ? 0 : 1))">sweep camera</button>
   <button onclick="post('/calibrate')">calibrate</button>
+  <button id="hold" onclick="post('/hold?on=' + (state.hold ? 0 : 1))">hold</button>
 </div>
 <div class="row" style="margin-top:6px">
   <input id="mark" placeholder="note, e.g. lights dimmed">
@@ -174,6 +175,8 @@ function refresh() {
     document.getElementById('rec').className = s.recording ? 'warn' : '';
     document.getElementById('rec').textContent = s.recording ? 'stop recording' : 'record';
     document.getElementById('sweep').className = s.sweep ? 'on' : '';
+    document.getElementById('hold').className = s.hold ? 'warn' : '';
+    document.getElementById('hold').textContent = s.hold ? 'held: tap to release' : 'hold';
   }).catch(() => {});
 }
 

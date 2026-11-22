@@ -59,6 +59,11 @@ class DebugPage(
             iso: Int,
         )
 
+        /** Calibration and exposure tracking held (phone not at its table). */
+        val hold: Boolean
+
+        fun hold(on: Boolean)
+
         /** Focus on the counters at the next reading that finds them, or on ([x], [y]) of the camera frame, [size] wide. */
         fun focus(
             x: Float?,
@@ -100,6 +105,7 @@ class DebugPage(
             "/calibrate" -> host.calibrate()
             "/sweep" -> host.sweep(p["on"] == "1")
             "/manual" -> host.manual(p["ns"]?.toLongOrNull() ?: 0L, p["iso"]?.toIntOrNull() ?: 100)
+            "/hold" -> host.hold(p["on"] == "1")
             "/focus" -> host.focus(p["x"]?.toFloatOrNull(), p["y"]?.toFloatOrNull(), p["size"]?.toFloatOrNull())
             "/zoom" -> p["ratio"]?.toFloatOrNull()?.let(host::zoom)
             else -> return Response.notFound
@@ -138,6 +144,7 @@ class DebugPage(
             put("manual", host.manual)
             put("exposureInfo", host.exposureInfo)
             put("focus", host.focus)
+            put("hold", host.hold)
             put("sweep", host.sweeping)
             put("recording", recorder.recording)
             put("session", recorder.session?.name)
