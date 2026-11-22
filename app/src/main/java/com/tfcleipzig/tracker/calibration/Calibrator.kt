@@ -1,27 +1,32 @@
 package com.tfcleipzig.tracker.calibration
 
+import com.tfcleipzig.tracker.calibration.ExposureTracker.Exposure
 import com.tfcleipzig.tracker.detection.Rotation
 import com.tfcleipzig.tracker.detection.TableEndReader
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Finds the camera zoom and exposure that read the counters best, by trying settings and scoring
- * the frames each one gives. Plain logic: [feed] it every reading (analysis thread), carry out the
- * [Command]s it returns on the camera.
+ * Finds the rotation, exposure and zoom that read the counters best, by trying settings and
+ * scoring the frames each one gives. Plain logic: [feed] it every reading (analysis thread), carry
+ * out the [Command]s it returns on the camera.
  *
- * 1. Find: the saved zoom, else 1×, 1.5×, … until the counters read (goals, sets and timeouts)
- *    in at least half the frames. Bars alone aren't enough: a bar cut off by the frame edge still
- *    looks like a bar. Every frame is read in all four [Rotation]s (the phone can hang any way
- *    round); the rotation that reads most often wins and is kept from then on. The saved rotation
- *    wins ties.
- * 2. Zoom: the largest zoom that keeps [marginPitches] of free frame around the bars. Digital
- *    zoom crops around the frame centre and a margin measured in pitches doesn't change with zoom,
- *    so one reading gives it. Kept if it scores no worse than the zoom it came from.
- * 3. Exposure: every exposure compensation step; the best score wins (ties go to the one nearer
- *    0). Then exposure and white balance are locked at it, so players' shirts can't shift them.
+ * Exposure is always manual (exposure time and ISO): auto exposure meters the whole frame, mostly
+ * dark floor around a lit table, and overexposes the counters.
+ *
+ * 1. Find: at the start exposure, the saved zoom, else 1×, 1.5×, … until the counters read
+ *    (goals, sets and timeouts) in at least half the frames; if no zoom does, again ¼ and 4× as
+ *    bright. Bars alone aren't enough: a bar cut off by the frame edge still looks like a bar.
+ *    Every frame is read in all four [Rotation]s (the phone can hang any way round); the rotation
+ *    that reads most often wins and is kept from then on. The saved rotation wins ties.
+ * 2. Exposure: [EXPOSURE_STEPS] around the one that found the bars; the best score wins, ties go to
+ *    the one nearest the start. Its stones' brightness becomes the target [ExposureTracker] keeps.
+ * 3. Zoom: the largest zoom that keeps [marginPitches] of free frame around the bars. Digital zoom
+ *    crops around the frame centre and a margin measured in pitches doesn't change with zoom, so
+ *    one reading gives it. Kept if it scores nearly as well as the zoom it came from.
  *
  * Each setting gets [settleFrames] to take effect, then [measureFrames] are scored: the summed
  * confidence of the frames that agree with the most common reading, over all frames. A setting
@@ -30,8 +35,8 @@ import kotlin.math.min
  */
 class Calibrator(
     private val zoomRange: ClosedFloatingPointRange<Float>,
-    private val exposureRange: IntRange,
     private val startZoom: Float,
+    private val startExposure: Exposure = DEFAULT_EXPOSURE,
     private val startRotation: Rotation = Rotation.R0,
     private val settleFrames: Int = 10,
     private val measureFrames: Int = 20,
@@ -42,30 +47,33 @@ class Calibrator(
             val ratio: Float,
         ) : Command
 
-        data class Exposure(
-            val index: Int,
-            val locked: Boolean,
+        /** Manual exposure: auto exposure off. */
+        data class SetExposure(
+            val exposure: Exposure,
         ) : Command
 
         data class Done(
             val zoom: Float,
-            val exposure: Int,
+            val exposure: Exposure,
             val score: Float,
             val rotation: Rotation,
+            /** The stones' brightness at [exposure]: what [ExposureTracker] keeps. */
+            val stoneLuma: Float,
         ) : Command
 
-        /** Nothing worked; the camera is back at [zoom], exposure 0, unlocked. */
+        /** Nothing worked; the camera is back at [zoom] and [exposure]. */
         data class Failed(
             val reason: String,
             val zoom: Float,
+            val exposure: Exposure,
         ) : Command
     }
 
-    private enum class Phase { FIND, ZOOM, EXPOSURE, LOCK, DONE }
+    private enum class Phase { FIND, EXPOSURE, ZOOM, DONE }
 
     private var phase = Phase.FIND
     private var zoom = startZoom
-    private var exposure = 0
+    private var exposure = startExposure
     private var frames = 0
 
     /** The rotation the readings are scored in; during find, the one that leads so far. */
@@ -76,14 +84,24 @@ class Calibrator(
     /** During find, the other rotations' readings of the same frames. */
     private val otherWindows = mutableMapOf<Rotation, MutableList<TableEndReader.Reading>>()
 
-    private val findZooms =
+    private val zooms =
         (listOf(startZoom) + FIND_ZOOMS.filter { abs(it - startZoom) > 0.1f })
             .filter { it in zoomRange }
+
+    /** Find order: every zoom at the start exposure, then at the others. */
+    private val findSteps =
+        FIND_BRIGHTNESS
+            .flatMap { b -> zooms.map { z -> z to scaled(startExposure, b) } }
             .toMutableList()
-    private var bestZoomScore = -1f
-    private val exposureScores = mutableMapOf<Int, Float>()
-    private val exposures = exposureRange.toMutableList()
-    private var lockSent = false
+
+    /** Exposure phase: the steps still to try, and what each one gave. */
+    private val exposureSteps = mutableListOf<Exposure>()
+    private val exposureResults = mutableMapOf<Exposure, List<TableEndReader.Reading>>()
+    private var foundExposure = startExposure
+
+    private var zoomFrom = startZoom
+    private var bestScore = 0f
+    private var bestReadings = emptyList<TableEndReader.Reading>()
 
     /** One line for the HUD. */
     @Volatile var status: String = "starting"
@@ -95,12 +113,8 @@ class Calibrator(
     val rotations: List<Rotation>
         get() = if (phase == Phase.FIND) listOf(rotation) + Rotation.entries.filter { it != rotation } else listOf(rotation)
 
-    /** The commands to start with: exposure unlocked at 0, the first zoom to try. */
-    fun start(): List<Command> {
-        zoom = findZooms.removeAt(0)
-        status = "find bars at zoom %.2f".format(zoom)
-        return listOf(Command.Exposure(0, locked = false), Command.Zoom(zoom))
-    }
+    /** The commands to start with: the first exposure and zoom to try. */
+    fun start(): List<Command> = nextFind()
 
     /** One frame's reading at [width]×[height], in [rotation]; returns what to change, often nothing. */
     fun feed(
@@ -123,12 +137,6 @@ class Calibrator(
         val reading = readings[rotation] ?: return emptyList()
         frames++
         if (frames <= settleFrames) return emptyList()
-        if (phase == Phase.LOCK && !lockSent) {
-            // The exposure has settled at the chosen value; freeze it, then measure once more.
-            lockSent = true
-            frames = 0
-            return listOf(Command.Exposure(exposure, locked = true))
-        }
         window += reading
         if (phase == Phase.FIND) {
             for ((r, other) in readings) if (r != rotation) otherWindows.getOrPut(r) { mutableListOf() } += other
@@ -140,22 +148,16 @@ class Calibrator(
         val others = otherWindows.toMap()
         otherWindows.clear()
         frames = 0
-        val score = score(measured)
         return when (phase) {
-            Phase.FIND -> afterFind(bestRotation(measured, others), width, height)
-            Phase.ZOOM -> afterZoom(score)
-            Phase.EXPOSURE -> afterExposure(score)
-            Phase.LOCK -> {
-                phase = Phase.DONE
-                status = "done: zoom %.2f, exposure %+d, score %.2f".format(zoom, exposure, score)
-                listOf(Command.Done(zoom, exposure, score, rotation))
-            }
+            Phase.FIND -> afterFind(bestRotation(measured, others))
+            Phase.EXPOSURE -> afterExposure(measured, width, height)
+            Phase.ZOOM -> afterZoom(measured)
             Phase.DONE -> emptyList()
         }
     }
 
     /**
-     * The rotation whose readings show both bars most often (ties: the leading one, then the
+     * The rotation whose readings read most often (ties: more bars, the leading one, then the
      * better score); switches [rotation] to it and returns its readings.
      */
     private fun bestRotation(
@@ -174,83 +176,124 @@ class Calibrator(
         return best.second
     }
 
-    private fun afterFind(
+    private fun nextFind(): List<Command> {
+        val (z, e) = findSteps.removeAt(0)
+        zoom = z
+        exposure = e
+        status = "find bars at zoom %.2f, %s".format(zoom, describe(exposure))
+        return listOf(Command.SetExposure(exposure), Command.Zoom(zoom))
+    }
+
+    private fun afterFind(measured: List<TableEndReader.Reading>): List<Command> {
+        if (measured.count(::reads) * 2 < measured.size) {
+            if (findSteps.isEmpty()) return fail("no counters at any zoom or exposure", startZoom, startExposure)
+            return nextFind()
+        }
+        // Found: try exposures around this one, at this zoom.
+        foundExposure = exposure
+        exposureSteps += EXPOSURE_STEPS.map { scaled(foundExposure, it) }.distinct()
+        phase = Phase.EXPOSURE
+        return nextExposure()
+    }
+
+    private fun nextExposure(): List<Command> {
+        exposure = exposureSteps.removeAt(0)
+        status = "rotation ${rotation.degrees}°, exposure %s at zoom %.2f".format(describe(exposure), zoom)
+        return listOf(Command.SetExposure(exposure))
+    }
+
+    private fun afterExposure(
         measured: List<TableEndReader.Reading>,
         rawWidth: Int,
         rawHeight: Int,
     ): List<Command> {
-        val score = score(measured)
+        exposureResults[exposure] = measured
+        if (exposureSteps.isNotEmpty()) return nextExposure()
+
+        val scores = exposureResults.mapValues { score(it.value) }
+        val top = scores.values.max()
+        if (top <= 0f) return fail("nothing read at any exposure", zoom, foundExposure)
+        exposure = scores.filterValues { it >= top * TIE }.keys.minBy { abs(ln(it.value / foundExposure.value)) }
+        bestScore = scores.getValue(exposure)
+        bestReadings = exposureResults.getValue(exposure)
+
+        // Zoom: as far as the margin allows, judged on the chosen exposure's readings.
         val (width, height) = rotation.size(rawWidth, rawHeight)
-        val withBars = measured.filter(::reads)
-        if (withBars.size * 2 < measured.size) {
-            if (findZooms.isEmpty()) {
-                phase = Phase.DONE
-                status = "failed: no counters at any zoom"
-                return listOf(Command.Zoom(startZoom), Command.Failed("no counters found at any zoom", startZoom))
-            }
-            zoom = findZooms.removeAt(0)
-            status = "find bars at zoom %.2f".format(zoom)
-            return listOf(Command.Zoom(zoom))
-        }
-        status = "bars found, rotation ${rotation.degrees}°"
-        bestZoomScore = score
-        val factor = withBars.mapNotNull { zoomFactor(it, width, height, marginPitches) }.sorted().let { it[it.size / 2] }
-        val target = (floor(zoom * factor / ZOOM_STEP) * ZOOM_STEP).coerceIn(zoomRange.start, zoomRange.endInclusive)
-        if (abs(target - zoom) < ZOOM_STEP) return startExposure()
+        val factors = bestReadings.filter(::reads).mapNotNull { zoomFactor(it, width, height, marginPitches) }.sorted()
+        val target =
+            factors
+                .getOrNull(factors.size / 2)
+                ?.let { (floor(zoom * it / ZOOM_STEP) * ZOOM_STEP).coerceIn(zoomRange.start, zoomRange.endInclusive) }
+        if (target == null || abs(target - zoom) < ZOOM_STEP) return done(bestReadings, bestScore, listOf(Command.SetExposure(exposure)))
         phase = Phase.ZOOM
-        val from = zoom
+        zoomFrom = zoom
         zoom = target
-        status = "zoom %.2f -> %.2f".format(from, target)
-        previousZoom = from
-        return listOf(Command.Zoom(target))
+        status = "zoom %.2f -> %.2f at %s".format(zoomFrom, target, describe(exposure))
+        return listOf(Command.SetExposure(exposure), Command.Zoom(target))
     }
 
-    private var previousZoom = startZoom
-
-    private fun afterZoom(score: Float): List<Command> {
+    private fun afterZoom(measured: List<TableEndReader.Reading>): List<Command> {
+        val score = score(measured)
         // More pixels per stone is worth a little score; a lot less means the bars got cut off.
-        if (score < bestZoomScore * KEEP_ZOOM_SCORE) {
-            zoom = previousZoom
-            return startExposure() + Command.Zoom(zoom)
+        if (score < bestScore * KEEP_ZOOM_SCORE) {
+            zoom = zoomFrom
+            return done(bestReadings, bestScore, listOf(Command.Zoom(zoom)))
         }
-        return startExposure()
+        return done(measured, score, emptyList())
     }
 
-    private fun startExposure(): List<Command> {
-        phase = Phase.EXPOSURE
-        exposure = exposures.removeAt(0)
-        status = "exposure %+d at zoom %.2f".format(exposure, zoom)
-        return listOf(Command.Exposure(exposure, locked = false))
+    private fun done(
+        measured: List<TableEndReader.Reading>,
+        score: Float,
+        before: List<Command>,
+    ): List<Command> {
+        phase = Phase.DONE
+        val lumas = measured.mapNotNull { it.stoneLuma }.sorted()
+        val luma = lumas.getOrNull(lumas.size / 2) ?: TARGET_LUMA
+        status = "done: rotation ${rotation.degrees}°, zoom %.2f, %s, stones %.0f, score %.2f".format(zoom, describe(exposure), luma, score)
+        return before + Command.Done(zoom, exposure, score, rotation, luma)
     }
 
-    private fun afterExposure(score: Float): List<Command> {
-        exposureScores[exposure] = score
-        if (exposures.isNotEmpty()) {
-            exposure = exposures.removeAt(0)
-            status = "exposure %+d at zoom %.2f".format(exposure, zoom)
-            return listOf(Command.Exposure(exposure, locked = false))
-        }
-        val top = exposureScores.values.max()
-        if (top <= 0f) {
-            phase = Phase.DONE
-            status = "failed: nothing read at any exposure"
-            return listOf(Command.Exposure(0, locked = false), Command.Failed("nothing read at any exposure", zoom))
-        }
-        exposure = exposureScores.filterValues { it >= top * TIE }.keys.minBy { abs(it) }
-        phase = Phase.LOCK
-        status = "lock exposure %+d".format(exposure)
-        return listOf(Command.Exposure(exposure, locked = false))
+    private fun fail(
+        reason: String,
+        zoom: Float,
+        exposure: Exposure,
+    ): List<Command> {
+        phase = Phase.DONE
+        this.zoom = zoom
+        this.exposure = exposure
+        status = "failed: $reason"
+        return listOf(Command.Zoom(zoom), Command.SetExposure(exposure), Command.Failed(reason, zoom, exposure))
     }
 
     companion object {
         val FIND_ZOOMS = listOf(1f, 1.5f, 2f, 2.5f, 3f, 3.5f, 4f)
         const val ZOOM_STEP = 0.05f
 
+        /** Find at the start exposure, then this much darker and brighter. */
+        val FIND_BRIGHTNESS = listOf(1.0, 0.25, 4.0)
+
+        /** Exposure phase: these multiples of the exposure that found the bars (half-stop steps over ±2 stops). */
+        val EXPOSURE_STEPS = listOf(0.25, 0.354, 0.5, 0.707, 1.0, 1.414, 2.0, 2.83, 4.0)
+
+        /** Where a calibration starts without a saved one: what read well on site, 2026-11-22. */
+        val DEFAULT_EXPOSURE = Exposure(10_000_000, 400)
+
+        /** Stone brightness to keep when a calibration measured none. */
+        const val TARGET_LUMA = 200f
+
         /** A larger zoom is kept down to this share of the score it came from. */
         const val KEEP_ZOOM_SCORE = 0.9f
 
         /** Exposures within this share of the best count as tied. */
         const val TIE = 0.95f
+
+        fun scaled(
+            exposure: Exposure,
+            factor: Double,
+        ): Exposure = ExposureTracker.split(exposure.value * factor)
+
+        fun describe(e: Exposure) = "%.1f ms iso %d".format(e.exposureNs / 1e6, e.iso)
 
         fun hasBars(reading: TableEndReader.Reading) = reading.line != null && reading.setBar != null && reading.goalBar != null
 

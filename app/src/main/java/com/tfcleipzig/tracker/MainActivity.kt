@@ -2,10 +2,15 @@ package com.tfcleipzig.tracker
 
 import android.Manifest
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.ImageDecoder
+import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings.Secure
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -13,8 +18,11 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.tfcleipzig.tracker.calibration.Calibrator
+import com.tfcleipzig.tracker.calibration.ExposureTracker
 import com.tfcleipzig.tracker.calibration.LostWatch
 import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.camera.FrameAnalyzer
@@ -34,6 +42,7 @@ import com.tfcleipzig.tracker.detection.TableEndReader
 import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
+import com.tfcleipzig.tracker.net.TrackerReport
 import com.tfcleipzig.tracker.settings.TrackerSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -61,7 +70,7 @@ class MainActivity : AppCompatActivity() {
     /** Camera sweep for recordings, from the debug page; null when off. */
     @Volatile private var sweep: CameraSweep? = null
 
-    /** Manual sensor exposure set from the debug page; null when auto. */
+    /** Exposure set by hand on the debug page; overrides the [tracker] until set back to auto. */
     private data class Manual(
         val exposureNs: Long,
         val iso: Int,
@@ -70,6 +79,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Volatile private var manual: Manual? = null
+
+    /** Keeps the stones' brightness as the light changes; null while calibrating, sweeping or set by hand. */
+    @Volatile private var tracker: ExposureTracker? = null
 
     /** Focus on the counters at the next reading that finds both bars (start, after calibration, debug page). */
     @Volatile private var needsFocus = true
@@ -163,7 +175,89 @@ class MainActivity : AppCompatActivity() {
         renderSetup()
 
         lifecycleScope.launch { discovery.server.collect { renderStatus() } }
+        startReporting()
         checkPhotoExtra(intent)
+    }
+
+    /** Last report to the server, for the HUD. */
+    @Volatile private var reportStatus = "-"
+
+    /** Tells the server how this phone is doing, every [REPORT_INTERVAL_MS] while it runs (see [TrackerReport]). */
+    private fun startReporting() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val server = discovery.server.value
+                    if (server == null) {
+                        reportStatus = "no server"
+                    } else {
+                        client
+                            .report(server, report())
+                            .onSuccess { reportStatus = "ok" }
+                            .onFailure {
+                                if (reportStatus == "ok" || reportStatus == "-") Log.w(TAG, "report not sent", it)
+                                reportStatus = "failed: ${it.message}"
+                            }
+                    }
+                    delay(REPORT_INTERVAL_MS)
+                }
+            }
+        }
+    }
+
+    /** This phone's state for the server; main thread. */
+    private fun report(): TrackerReport {
+        val s = stats
+        val r = s?.counters
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level =
+            battery?.let {
+                val l = it.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = it.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                if (l >= 0 && scale > 0) l * 100 / scale else null
+            }
+        val charging =
+            battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)?.takeIf { it >= 0 }?.let {
+                it == BatteryManager.BATTERY_STATUS_CHARGING || it == BatteryManager.BATTERY_STATUS_FULL
+            }
+        val temperature =
+            battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)?.takeIf { it != Int.MIN_VALUE }?.let {
+                it /
+                    10f
+            }
+
+        @Suppress("DEPRECATION") // connectionInfo is the simple way on API 33 without a network callback
+        val rssi = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager).connectionInfo?.rssi?.takeIf { it > -127 }
+        val ip = wifiAddress()
+        val id = Secure.getString(contentResolver, Secure.ANDROID_ID) ?: "unknown"
+        val hand = manual
+        val e = if (hand != null) ExposureTracker.Exposure(hand.exposureNs, hand.iso) else tracker?.exposure ?: settings.exposure
+        return TrackerReport(
+            id = id,
+            name = "${Build.MODEL} ${id.takeLast(4)}",
+            appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "?",
+            ip = ip,
+            debugUrl = ip?.let { "http://$it:${DebugServer.PORT}/" },
+            uptimeS = SystemClock.elapsedRealtime() / 1000,
+            battery = TrackerReport.Battery(level, charging, temperature),
+            wifiRssi = rssi,
+            tableEnd = end?.name,
+            side = settings.side.name.lowercase(),
+            reading = r?.let { TrackerReport.Reading(it.goals, it.sets, it.timeouts, it.confidence, it.problems) },
+            camera =
+                TrackerReport.Camera(
+                    fps = s?.fps,
+                    zoom = zoom?.ratio,
+                    rotation = (s?.rotation ?: settings.rotation).degrees,
+                    exposureNs = e.exposureNs,
+                    iso = e.iso,
+                    stoneLuma = r?.stoneLuma,
+                    targetLuma = settings.stoneLuma,
+                    readMs = s?.readMs,
+                ),
+            calibration = calibrator?.status ?: calibration,
+            sync = syncStatus,
+        )
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -190,7 +284,7 @@ class MainActivity : AppCompatActivity() {
         return calibrate
     }
 
-    /** Camera bound with the saved zoom and exposure: calibrate, or lock the saved exposure. */
+    /** Camera bound with the saved zoom: calibrate, or set the saved exposure and keep it tracking. */
     private fun onCameraBound() {
         if (calibrateWhenBound || !settings.calibrated) {
             calibrateWhenBound = false
@@ -198,19 +292,23 @@ class MainActivity : AppCompatActivity() {
             return
         }
         calibration = "saved"
-        lifecycleScope.launch {
-            // Let auto exposure settle at the saved compensation before freezing it.
-            delay(LOCK_DELAY_MS)
-            if (calibrator == null) camera.setExposure(settings.exposure, locked = true)
-        }
+        useSavedExposure()
+    }
+
+    /** The saved manual exposure on the camera, tracked from there; main thread. */
+    private fun useSavedExposure() {
+        val e = settings.exposure
+        camera.setManualExposure(e.exposureNs, e.iso)
+        tracker = ExposureTracker(settings.stoneLuma, e)
     }
 
     /** Finds zoom and exposure for the counters (see [Calibrator]); replaces a running one. */
     private fun startCalibration() {
         stopSweep(restore = false)
         manual = null
+        tracker = null
         val zoomRange = camera.zoomRange() ?: return
-        val c = Calibrator(zoomRange, camera.exposureRange() ?: 0..0, settings.zoom, settings.rotation)
+        val c = Calibrator(zoomRange, settings.zoom, settings.exposure, settings.rotation)
         lost.reset()
         calibrator = c
         Log.i(TAG, "calibration started")
@@ -226,11 +324,13 @@ class MainActivity : AppCompatActivity() {
         for (command in commands) {
             when (command) {
                 is Calibrator.Command.Zoom -> camera.setZoom(command.ratio)
-                is Calibrator.Command.Exposure -> camera.setExposure(command.index, command.locked)
+                is Calibrator.Command.SetExposure -> camera.setManualExposure(command.exposure.exposureNs, command.exposure.iso)
                 is Calibrator.Command.Done -> {
                     settings.zoom = command.zoom
                     settings.exposure = command.exposure
+                    settings.stoneLuma = command.stoneLuma
                     settings.rotation = command.rotation
+                    tracker = ExposureTracker(command.stoneLuma, command.exposure)
                     needsFocus = true
                     settings.calibrated = true
                     calibrator = null
@@ -239,6 +339,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 is Calibrator.Command.Failed -> {
                     calibrator = null
+                    // The camera is back at the start exposure; keep it tracking if there was a calibration.
+                    if (settings.calibrated) tracker = ExposureTracker(settings.stoneLuma, command.exposure)
                     calibration = c.status
                     Log.w(TAG, "calibration ${c.status}")
                 }
@@ -271,6 +373,7 @@ class MainActivity : AppCompatActivity() {
                 override val rotation get() = stats?.rotation?.degrees ?: settings.rotation.degrees
                 override val sync get() = syncStatus
                 override val manual get() = this@MainActivity.manual?.toString()
+                override val exposureInfo get() = exposureInfo()
 
                 override fun manual(
                     exposureNs: Long,
@@ -312,6 +415,17 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    /** [t] wants [e] for the light now; main thread. */
+    private fun followLight(
+        t: ExposureTracker,
+        e: ExposureTracker.Exposure,
+    ) {
+        if (tracker !== t) return // calibration, sweep or a hand setting took over meanwhile
+        camera.setManualExposure(e.exposureNs, e.iso)
+        settings.exposure = e
+        Log.i(TAG, "light changed: exposure %.1f ms iso %d".format(e.exposureNs / 1e6, e.iso))
+    }
+
     /** Manual exposure from the debug page, or back to the saved auto exposure for 0; main thread. */
     private fun setManual(
         exposureNs: Long,
@@ -319,10 +433,11 @@ class MainActivity : AppCompatActivity() {
     ) {
         if (exposureNs <= 0L) {
             manual = null
-            camera.setExposure(settings.exposure, locked = settings.calibrated)
+            useSavedExposure()
             return
         }
         calibrator = null
+        tracker = null
         stopSweep(restore = false)
         if (camera.setManualExposure(exposureNs, iso)) manual = Manual(exposureNs, iso)
     }
@@ -331,6 +446,7 @@ class MainActivity : AppCompatActivity() {
     private fun startSweep() {
         if (sweep != null) return
         manual = null
+        tracker = null
         calibrator = null
         val zooms = CameraSweep.zoomsAround(settings.zoom, camera.zoomRange() ?: return)
         sweep =
@@ -347,13 +463,7 @@ class MainActivity : AppCompatActivity() {
         sweep = null
         if (!restore) return
         camera.setZoom(settings.zoom)
-        camera.setExposure(settings.exposure, locked = false)
-        if (settings.calibrated) {
-            lifecycleScope.launch {
-                delay(LOCK_DELAY_MS)
-                if (calibrator == null && sweep == null) camera.setExposure(settings.exposure, locked = true)
-            }
-        }
+        useSavedExposure()
     }
 
     private fun stepZoom(step: Float) {
@@ -439,12 +549,14 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread { if (calibrator == null && sweep == null) startCalibration() }
                     } else {
                         scoreSync.update(s.counters)?.let(::sendScore)
+                        val t = tracker
+                        t?.update(s.counters.stoneLuma)?.let { e -> runOnUiThread { followLight(t, e) } }
                     }
                 }
                 stats = s
                 binding.status.post { renderStatus() }
             }
-        camera.start(binding.preview, analyzer, settings.zoom, settings.exposure) { onCameraBound() }
+        camera.start(binding.preview, analyzer, settings.zoom) { onCameraBound() }
     }
 
     /**
@@ -546,6 +658,22 @@ class MainActivity : AppCompatActivity() {
         renderStatus()
     }
 
+    /** "10.3 ms iso 400 (tracking), stones 196 / target 200" for the HUD and debug page. */
+    private fun exposureInfo(): String {
+        val hand = manual
+        val e = if (hand != null) ExposureTracker.Exposure(hand.exposureNs, hand.iso) else tracker?.exposure ?: settings.exposure
+        val how =
+            when {
+                hand != null -> "by hand"
+                calibrator != null -> "calibrating"
+                sweep != null -> "sweep"
+                tracker != null -> "tracking"
+                else -> "saved"
+            }
+        val stones = stats?.counters?.stoneLuma?.let { "%.0f".format(it) } ?: "?"
+        return "%.1f ms iso %d (%s), stones %s / target %.0f".format(e.exposureNs / 1e6, e.iso, how, stones, settings.stoneLuma)
+    }
+
     private fun renderStatus() {
         val s = stats
         binding.status.text =
@@ -562,7 +690,8 @@ class MainActivity : AppCompatActivity() {
                     } ?: "",
                 )
                 appendLine("calib  ${calibrator?.status ?: calibration}")
-                appendLine("sync   $syncStatus")
+                appendLine("sync   $syncStatus  report $reportStatus")
+                appendLine("light  ${exposureInfo()}")
                 if (recorder.recording) appendLine("rec    ${recorder.session?.name}  ${recorder.frames} frames, ${recorder.rawFrames} raw")
                 appendLine("debug  http://${wifiAddress() ?: "?"}:${DebugServer.PORT}/")
                 if (s != null) {
@@ -617,9 +746,11 @@ class MainActivity : AppCompatActivity() {
         const val ZOOM_STEP = 0.05f
         const val EXTRA_PHOTO = "photo"
         const val EXTRA_CALIBRATE = "calibrate"
-        const val LOCK_DELAY_MS = 2000L
         const val LOST_FRAMES = 3
         const val SYNC_RETRY_MS = 2000L
+
+        /** How often the phone reports to the server. */
+        const val REPORT_INTERVAL_MS = 5000L
 
         /** Focus region: both bars' span times this. */
         const val FOCUS_MARGIN = 1.3f

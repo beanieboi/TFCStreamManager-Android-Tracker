@@ -79,6 +79,25 @@ class ServerClient(
             }
         }
 
+    /** Sends this phone's [report] (`POST /api/trackers`). */
+    suspend fun report(
+        server: HttpUrl,
+        report: TrackerReport,
+    ): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val request =
+                    Request
+                        .Builder()
+                        .url(server.resolve("/api/trackers")!!)
+                        .post(json.encodeToString(TrackerReport.serializer(), report).toRequestBody(JSON))
+                        .build()
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("POST /api/trackers: HTTP ${response.code}")
+                }
+            }
+        }
+
     /** POST /api/intents; the scoreboard after it, or the current one on a revision conflict. */
     private fun post(
         server: HttpUrl,

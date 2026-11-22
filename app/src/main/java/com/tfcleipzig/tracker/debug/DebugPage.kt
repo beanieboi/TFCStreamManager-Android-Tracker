@@ -47,6 +47,9 @@ class DebugPage(
 
         fun calibrate()
 
+        /** The exposure in use and the stones' brightness against its target. */
+        val exposureInfo: String
+
         /** Last focus on the counters: "auto", "focusing", "on counters", ... */
         val focus: String
 
@@ -133,6 +136,7 @@ class DebugPage(
             put("rotation", host.rotation)
             put("sync", host.sync)
             put("manual", host.manual)
+            put("exposureInfo", host.exposureInfo)
             put("focus", host.focus)
             put("sweep", host.sweeping)
             put("recording", recorder.recording)

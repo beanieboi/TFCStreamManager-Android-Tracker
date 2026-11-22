@@ -3,6 +3,8 @@ package com.tfcleipzig.tracker.settings
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.edit
+import com.tfcleipzig.tracker.calibration.Calibrator
+import com.tfcleipzig.tracker.calibration.ExposureTracker
 import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.detection.EndVote
 import com.tfcleipzig.tracker.detection.Rotation
@@ -29,10 +31,22 @@ class TrackerSettings(
         get() = prefs.getString(KEY_SIDE, null)?.let { runCatching { Side.valueOf(it) }.getOrNull() } ?: Side.HOME
         set(value) = prefs.edit { putString(KEY_SIDE, value.name) }
 
-    /** Exposure compensation index from calibration; locked with white balance when [calibrated]. */
-    var exposure: Int
-        get() = prefs.getInt(KEY_EXPOSURE, 0)
-        set(value) = prefs.edit { putInt(KEY_EXPOSURE, value) }
+    /**
+     * Manual exposure (exposure time and ISO) from calibration, kept up to date as the light
+     * changes ([com.tfcleipzig.tracker.calibration.ExposureTracker]).
+     */
+    var exposure: ExposureTracker.Exposure
+        get() =
+            ExposureTracker.Exposure(
+                prefs.getLong(KEY_EXPOSURE_NS, Calibrator.DEFAULT_EXPOSURE.exposureNs),
+                prefs.getInt(KEY_ISO, Calibrator.DEFAULT_EXPOSURE.iso),
+            )
+        set(value) = prefs.edit { putLong(KEY_EXPOSURE_NS, value.exposureNs).putInt(KEY_ISO, value.iso) }
+
+    /** How bright the stones were at calibration: what the exposure is kept at. */
+    var stoneLuma: Float
+        get() = prefs.getFloat(KEY_STONE_LUMA, Calibrator.TARGET_LUMA)
+        set(value) = prefs.edit { putFloat(KEY_STONE_LUMA, value) }
 
     /** A calibration finished with these [zoom] and [exposure]; without one, the app calibrates on start. */
     var calibrated: Boolean
@@ -78,7 +92,11 @@ class TrackerSettings(
         // "end" (A/B) was a setting before it was detected; old values are ignored.
         const val KEY_SIDE = "side"
         const val KEY_ZOOM = "zoom"
-        const val KEY_EXPOSURE = "exposure"
+
+        // "exposure" was an exposure compensation index before exposure went manual; ignored.
+        const val KEY_EXPOSURE_NS = "exposure_ns"
+        const val KEY_ISO = "iso"
+        const val KEY_STONE_LUMA = "stone_luma"
         const val KEY_CALIBRATED = "calibrated"
         const val KEY_ROTATION = "rotation"
     }

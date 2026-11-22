@@ -40,6 +40,11 @@ class TableEndReader {
          * clearly the bar colours differ. For comparing camera settings, not a probability.
          */
         val confidence: Float = 0f,
+        /**
+         * How bright the stones are: the 90th percentile of luma over both bars' stone runs (the
+         * faces and dots; 255 when they clip). For keeping the exposure right; null without bars.
+         */
+        val stoneLuma: Float? = null,
     )
 
     fun read(frame: Frame): Reading {
@@ -66,7 +71,18 @@ class TableEndReader {
         val ratio = setBar.pitch / goalBar.pitch
         if (ratio !in MIN_PITCH_RATIO..MAX_PITCH_RATIO) {
             problems += "pitch set/goal %.2f".format(ratio)
-            return Reading(null, null, null, line, setBar, goalBar, problems, end, endScore)
+            return Reading(
+                null,
+                null,
+                null,
+                line,
+                setBar,
+                goalBar,
+                problems,
+                end,
+                endScore,
+                stoneLuma = stoneLuma(frame, line, setBar, goalBar),
+            )
         }
 
         val goals =
@@ -95,7 +111,50 @@ class TableEndReader {
         val fit = if (costs.isEmpty()) 0f else 1f - costs.average().toFloat() / BarScan.MAX_ALLOCATION_COST
         val colour = (abs(endScore) / CLEAR_END_SCORE).coerceAtMost(1f)
         val confidence = read * (0.5f + 0.5f * fit) * (0.5f + 0.5f * colour)
-        return Reading(goals, sets, timeouts, line, setBar, goalBar, problems, end, endScore, confidence)
+        return Reading(
+            goals,
+            sets,
+            timeouts,
+            line,
+            setBar,
+            goalBar,
+            problems,
+            end,
+            endScore,
+            confidence,
+            stoneLuma(frame, line, setBar, goalBar),
+        )
+    }
+
+    /** 90th percentile luma over the stone runs of both bars, around the stone line. */
+    private fun stoneLuma(
+        frame: Frame,
+        line: StoneLine.Line,
+        vararg bars: BarScan.Bar,
+    ): Float? {
+        val histogram = IntArray(256)
+        var n = 0
+        val half = line.stoneSize / 3
+        for (bar in bars) {
+            for (run in bar.runs) {
+                if (!run.isStone) continue
+                for (x in run.start until run.end) {
+                    if (x !in 0 until frame.width) continue
+                    val c = line.centerAt(x).toInt()
+                    for (y in (c - half).coerceAtLeast(0)..(c + half).coerceAtMost(frame.height - 1)) {
+                        histogram[frame.luma(x, y)]++
+                        n++
+                    }
+                }
+            }
+        }
+        if (n == 0) return null
+        var below = 0
+        for (v in 0..255) {
+            below += histogram[v]
+            if (below >= n * STONE_LUMA_PERCENTILE) return v.toFloat()
+        }
+        return 255f
     }
 
     /**
@@ -199,6 +258,10 @@ class TableEndReader {
     }
 
     private companion object {
+        /** [Reading.stoneLuma]: bright enough to be the faces and dots, not the black stone bodies. */
+
+        const val STONE_LUMA_PERCENTILE = 0.9f
+
         /** Below this mean green chroma on both bars there's no colour to go by (dark, washed out). */
         const val MIN_GREENNESS = 2f
 

@@ -150,7 +150,8 @@ function refresh() {
         (s.mode ? '  [' + s.mode + ']' : '') + '  ' + s.fps.toFixed(1) + ' fps\n' +
       'calib     ' + s.calibration + '\n' +
       'sync      ' + (s.sync ?? '-') + '\n' +
-      'focus     ' + (s.focus ?? '-');
+      'focus     ' + (s.focus ?? '-') + '\n' +
+      'exposure  ' + (s.exposureInfo ?? '-');
     document.getElementById('manual').className = s.manual ? 'on' : '';
     document.getElementById('auto').className = s.manual ? '' : 'on';
     if (!synced && s.manual) {
