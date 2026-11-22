@@ -1,0 +1,9 @@
+# Tracker phones hang where nobody can reach the power button. When one is off and gets power,
+# the bootloader starts charger mode (KPOC). Restart right away: a restart from charger mode boots
+# Android normally (seen on the WP5, 2026-11-22: boot reason "reboot", ro.bootmode normal).
+# This has to live in /system: commands from /vendor run as vendor_init, which may neither set
+# sys.powerctl nor sys.boot_from_charger_mode. Continuing the boot inside charger mode
+# (trigger late-init) hangs on this phone. The tracker app holds off until the battery has some
+# charge. Read in every boot mode; the trigger fires only in charger mode.
+on charger
+    setprop sys.powerctl reboot,tracker-autoboot

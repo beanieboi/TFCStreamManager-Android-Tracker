@@ -42,6 +42,8 @@
             packages = [
               pkgs.jdk21_headless
               android.platform-tools
+              # tools/install-autoboot.sh patches the phones' system image offline.
+              pkgs.e2fsprogs
             ];
             JAVA_HOME = pkgs.jdk21_headless.home;
             ANDROID_HOME = sdk;
