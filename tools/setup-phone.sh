@@ -2,15 +2,15 @@
 # Prepares a tracker phone for mounting out of reach. Needs a TrebleDroid userdebug GSI (adb root)
 # and USB for the first run.
 #
-#   ANDROID_SERIAL=OUKITELWP51201453 tools/setup-phone.sh
+#   ANDROID_SERIAL=<serial> tools/setup-phone.sh
 #
 # - adb over Wi-Fi on port 5555 (the HUD shows the IP): adb connect <ip>:5555, then e.g. adb reboot
 # - the tracker is the home app: it starts on boot and Android restarts it if it dies
 # - screen always on while powered, no lock screen, no battery optimisation for the tracker
 #
-# Not done here, see docs/remote-management.md: adb key checks (the GSI ships ro.adb.secure=0, so
-# anyone on the network gets a shell) and booting when power comes on. Both need /system changed,
-# which this GSI can't do on the phone.
+# Not done here: booting when power comes back (tools/install-autoboot.sh, next step) and adb key
+# checks (the GSI ships ro.adb.secure=0, so anyone on the network gets a shell; still open, see
+# docs/remote-management.md). Both change /system, which only works offline. Order: docs/flashing.md.
 set -euo pipefail
 
 : "${ANDROID_SERIAL:?set ANDROID_SERIAL to the phone serial}"

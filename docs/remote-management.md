@@ -21,12 +21,25 @@ Needs the TrebleDroid `userdebug` GSI (`adb root` works without a toggle). The s
 ## Day to day
 
 ```
-adb connect 10.0.0.69:5555          # IP is on the HUD ("phone" line); reserve it in DHCP
-adb -s 10.0.0.69:5555 reboot
-adb -s 10.0.0.69:5555 shell am force-stop com.tfcleipzig.tracker   # home app, comes back
-adb -s 10.0.0.69:5555 install -r app/build/outputs/apk/debug/app-debug.apk
-adb -s 10.0.0.69:5555 shell am start -n com.tfcleipzig.tracker/.MainActivity --ef zoom 2.3
+adb connect <ip>:5555               # IP is on the HUD ("phone" line); reserve it in DHCP
+adb -s <ip>:5555 reboot
+adb -s <ip>:5555 shell am force-stop com.tfcleipzig.tracker   # home app, comes back
+adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <ip>:5555 shell am start -n com.tfcleipzig.tracker/.MainActivity --ef zoom 2.3
 ```
+
+## Hold (away from the table)
+
+At home or on the bench the phone doesn't see its counters. To keep it from recalibrating or
+tracking exposure on whatever it sees, turn on **hold**:
+
+- debug page: tap **hold** (red, "held: tap to release")
+- over adb: `adb shell am start -n com.tfcleipzig.tracker/.MainActivity --ez hold true`
+
+Hold is saved and survives restarts. It blocks calibration, the lost-counters recalibration and
+exposure tracking, and it uses the saved settings. Turn it off again at the table
+(`--ez hold false`). After `adb install -r`, start the app with the extra right away, or the old
+setting applies.
 
 ## Power cuts
 
@@ -60,8 +73,7 @@ mode `normal`, no loop.
 
 The script backs up `/system`, patches a copy offline (unshare the ext4 `shared_blocks`, add the
 file, `e2fsck`), flashes it from fastbootd and compares the result. `/system` grows from 1.93 to
-about 2.5 GB, and `super` has room for it. Run on one phone so far (`OUKITELWP51201453`, step by
-step by hand, the script afterwards only for its checks).
+about 2.5 GB, and `super` has room for it. Run on one phone so far (step by step by hand; the script afterwards only for its checks).
 
 After a boot on a nearly empty battery the app holds tracking back (`BatteryGate`): the camera
 stays off below 15 % and the phone only charges. Try it with

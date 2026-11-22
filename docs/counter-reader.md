@@ -65,7 +65,7 @@ read. Zoom is free up to the camera's 4×.
 ./gradlew :app:testDebugUnitTest            # reports in app/build/reports/reference-*.txt
 REFERENCE_VERBOSE=1 ./gradlew :app:testDebugUnitTest --tests '*ReferencePhotosTest*' --rerun
 
-set -x ANDROID_SERIAL OUKITELWP51201453     # the tablet may be plugged in too
+set -x ANDROID_SERIAL <serial>     # the tablet may be plugged in too
 ./gradlew :app:installDebug :app:installDebugAndroidTest
 adb shell am instrument -w -e package com.tfcleipzig.tracker.bench \
     com.tfcleipzig.tracker.test/androidx.test.runner.AndroidJUnitRunner

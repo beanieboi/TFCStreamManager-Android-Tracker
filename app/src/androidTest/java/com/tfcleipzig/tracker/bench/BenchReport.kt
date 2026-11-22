@@ -12,7 +12,7 @@ import java.io.File
  * run when the APKs are installed by hand:
  *
  * ```
- * set -x ANDROID_SERIAL OUKITELWP51201453
+ * set -x ANDROID_SERIAL <serial>
  * ./gradlew :app:installDebug :app:installDebugAndroidTest
  * adb shell am instrument -w -e package com.tfcleipzig.tracker.bench \
  *     com.tfcleipzig.tracker.test/androidx.test.runner.AndroidJUnitRunner
