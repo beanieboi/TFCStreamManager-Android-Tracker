@@ -12,6 +12,9 @@ object TestFrames {
     const val WIDTH = 640
     const val HEIGHT = 480
 
+    /** A file of this name marks a folder's photos as deprecated (see [ReferencePhoto.deprecated]). */
+    const val DEPRECATED = "DEPRECATED.md"
+
     /** `testdata/` relative to Gradle's working directory for unit tests (`app/`). */
     val TESTDATA = File("../testdata")
 
@@ -19,8 +22,12 @@ object TestFrames {
         TESTDATA
             .walkTopDown()
             .filter { it.isFile && it.extension == "jpg" }
-            .mapNotNull { f -> ReferencePhoto.parse(f.relativeTo(TESTDATA).invariantSeparatorsPath)?.let { it to f } }
-            .sortedBy { it.first.path }
+            .mapNotNull { f ->
+                ReferencePhoto
+                    .parse(f.relativeTo(TESTDATA).invariantSeparatorsPath)
+                    ?.copy(deprecated = File(f.parentFile, DEPRECATED).exists())
+                    ?.let { it to f }
+            }.sortedBy { it.first.path }
             .toList()
 
     /** Squeezed to 640x480 with area averaging, like the camera's scaler. */

@@ -10,6 +10,11 @@ data class ReferencePhoto(
     val path: String,
     val side: String,
     val expected: Expected,
+    /**
+     * In a folder with a `DEPRECATED.md`: taken before the stone markers were renewed, kept for
+     * the old reader's ratchet only.
+     */
+    val deprecated: Boolean = false,
 ) {
     data class Expected(
         val score: Int,
