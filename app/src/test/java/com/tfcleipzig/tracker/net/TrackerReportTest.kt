@@ -26,6 +26,7 @@ class TrackerReportTest {
                 camera = TrackerReport.Camera(24.9f, 2.75f, 180, 10_000_000, 400, 196f, 200f, 12.3f),
                 calibration = "done",
                 sync = "sent",
+                power = "on power, battery 87 %",
             )
         val json = Json.parseToJsonElement(Json.encodeToString(TrackerReport.serializer(), report)).jsonObject
         assertEquals(
@@ -44,6 +45,7 @@ class TrackerReportTest {
                 "camera",
                 "calibration",
                 "sync",
+                "power",
             ),
             json.keys,
         )

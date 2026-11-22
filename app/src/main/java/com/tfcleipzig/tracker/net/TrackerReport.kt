@@ -27,6 +27,8 @@ data class TrackerReport(
     val camera: Camera,
     val calibration: String,
     val sync: String,
+    /** "on power, battery 87 %", or why tracking is held back. */
+    val power: String = "",
 ) {
     @Serializable
     data class Battery(

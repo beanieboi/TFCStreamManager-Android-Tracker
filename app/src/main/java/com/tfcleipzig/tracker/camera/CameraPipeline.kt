@@ -109,6 +109,9 @@ class CameraPipeline(
     private val copier = FrameCopier()
 
     private var sink: FrameSink? = null
+
+    /** Off: the camera stays closed even while the lifecycle is started ([setEnabled]). */
+    @Volatile private var enabled = true
     private var onBound: (() -> Unit)? = null
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -130,7 +133,7 @@ class CameraPipeline(
         lifecycleOwner.lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
-                    if (sink != null) cameraHandler.post { open() }
+                    if (sink != null && enabled) cameraHandler.post { open() }
                 }
 
                 override fun onStop(owner: LifecycleOwner) {
@@ -153,7 +156,21 @@ class CameraPipeline(
         this.sink = sink
         this.onBound = onBound
         setZoom(zoomRatio)
-        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) cameraHandler.post { open() }
+        if (enabled && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) cameraHandler.post { open() }
+    }
+
+    /**
+     * Turns the camera off (closed, whatever the lifecycle does) or on again (opens if the
+     * lifecycle is started). For holding back while the battery charges. Main thread.
+     */
+    fun setEnabled(on: Boolean) {
+        enabled = on
+        cameraHandler.post {
+            when {
+                !on -> close()
+                sink != null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) -> open()
+            }
+        }
     }
 
     /** The zoom range. */
@@ -284,7 +301,7 @@ class CameraPipeline(
 
     @SuppressLint("MissingPermission") // the activity asks for the camera before start()
     private fun open() {
-        if (device != null || cameraId == null) return
+        if (!enabled || device != null || cameraId == null) return
         manager.openCamera(
             cameraId,
             object : CameraDevice.StateCallback() {

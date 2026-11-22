@@ -45,6 +45,7 @@ import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
 import com.tfcleipzig.tracker.net.TrackerReport
+import com.tfcleipzig.tracker.power.BatteryGate
 import com.tfcleipzig.tracker.power.PowerIdle
 import com.tfcleipzig.tracker.settings.TrackerSettings
 import kotlinx.coroutines.Dispatchers
@@ -183,11 +184,23 @@ class MainActivity : AppCompatActivity() {
         darkScreen()
         power = PowerIdle(this, keepScreenOn = { binding.root.keepScreenOn = it }, onChange = { powerStatus = it })
         power.start()
+        battery =
+            BatteryGate(this, onChange = { open, level ->
+                batteryStatus = if (open) "battery $level %" else "battery $level %: charging to 15 % before tracking"
+                camera.setEnabled(open)
+                renderStatus()
+            })
+        battery.start()
         checkPhotoExtra(intent)
     }
 
     /** Idles on battery, wakes on power (see [PowerIdle]). */
     private lateinit var power: PowerIdle
+
+    /** Holds tracking back while the battery is nearly empty (see [BatteryGate]). */
+    private lateinit var battery: BatteryGate
+
+    @Volatile private var batteryStatus = "-"
 
     @Volatile private var powerStatus = "-"
 
@@ -288,6 +301,7 @@ class MainActivity : AppCompatActivity() {
                 ),
             calibration = calibrator?.status ?: calibration,
             sync = syncStatus,
+            power = "$powerStatus, $batteryStatus",
         )
     }
 
@@ -591,6 +605,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (::power.isInitialized) power.stop()
+        if (::battery.isInitialized) battery.stop()
         debugServer?.stop()
         recorder.stop()
         sweep?.stop()
@@ -775,7 +790,7 @@ class MainActivity : AppCompatActivity() {
                 appendLine("calib  ${if (settings.hold) "HOLD  " else ""}${calibrator?.status ?: calibration}")
                 appendLine("sync   $syncStatus  report $reportStatus")
                 appendLine("light  ${exposureInfo()}")
-                appendLine("power  $powerStatus")
+                appendLine("power  $powerStatus, $batteryStatus")
                 if (recorder.recording) appendLine("rec    ${recorder.session?.name}  ${recorder.frames} frames, ${recorder.rawFrames} raw")
                 appendLine("debug  http://${wifiAddress() ?: "?"}:${DebugServer.PORT}/")
                 if (s != null) {
