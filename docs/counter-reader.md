@@ -1,5 +1,8 @@
 # Counter reader
 
+Since 2026-11-22 the app reads the counters by their dots (`detection/DotReader.kt`); the reader
+described below (`TableEndReader`) stays for comparison. See "Dot reader" at the end.
+
 Reads goals, sets and timeouts at one end of the table from a 640×480 camera frame
 (`detection/TableEndReader.kt`). One phone per table end, camera zoomed 1.94×.
 
@@ -91,3 +94,24 @@ JPEG scaling gives 75/78 counters right and 0 wrong.
   a count after N agreeing frames; that removes the remaining single-frame wrong readings.
 - Keep reading the uncovered bar when a hand covers the other one.
 - `StoneLine.greenBlobs` is most of the read time on the phone; it scans all chroma pixels.
+
+## Dot reader
+
+On 2026-11-22 every stone got a fresh round marker: white on the black stones, pink on the green
+ones. One dot is one stone, so `DotReader` counts instead of measuring run lengths:
+
+1. Dots: small round blobs, bright and colourless (white) or clearly red (pink).
+2. The counter row: the line most dots of one size sit on (a vote over slopes up to ±0.15, then a
+   least-squares fit and a fresh pick from all dots, since the camera is rolled about 4°).
+3. Bars: split at the widest gap; a blob closer than 0.9 stones to its neighbour is an end cap and
+   dropped. Exactly 5 + 7 dots, or nothing is read.
+4. Free rod: a thin bright line with dark above and below, away from the stones. Its position gives
+   the split, including all stones at one end (goals 0 or 7).
+5. Counts as before: goals right of the goal bar's free rod; sets left of the set bar's first free
+   rod, timeouts 2 − stones right of its last.
+
+`ReaderComparisonTest` runs both readers on recordings (`RECORDING=recordings/...`). On the first
+recordings with the new dots (136 labelled frames, end A): both 111 correct; the old reader read one
+frame wrong (goals 2 as 1), the dot reader none. Its other "wrong" frames were labelling slips.
+`DotReaderPhotosTest` checks it never reads a reference photo wrong (photos with old dots may stay
+unread).

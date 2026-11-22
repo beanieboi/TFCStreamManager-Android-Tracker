@@ -28,6 +28,20 @@ adb -s 10.0.0.69:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s 10.0.0.69:5555 shell am start -n com.tfcleipzig.tracker/.MainActivity --ef zoom 2.3
 ```
 
+## Power cuts
+
+On battery the tracker idles instead of running the camera flat (`PowerIdle`): after 60 s
+without power the screen may turn off (timeout 15 s), which closes the camera; Wi-Fi stays up.
+When power comes back the screen turns on and the tracker carries on with its saved
+calibration. So the phone only switches off if power is gone for longer than the idle battery
+lasts. Needs `WRITE_SETTINGS` (`setup-phone.sh` grants it; the HUD's `power` line says if it's
+missing). Try it without pulling the plug:
+
+```
+adb shell dumpsys battery unplug     # power gone
+adb shell dumpsys battery reset      # back
+```
+
 ## Open: needs a modified system image
 
 Tested on the Oukitel WP5 with TrebleDroid (Android 13, `treble_arm64_bvS`), 2026-11-16:

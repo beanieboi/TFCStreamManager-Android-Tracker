@@ -117,17 +117,23 @@ function hits(s) {
   return 'last ' + recent.length + ': ' + n('ok') + ' ok, ' + n('miss') + ' miss, ' + n('WRONG') + ' wrong';
 }
 
+// Built once and only recoloured on refresh: rebuilding them every 500 ms swallowed taps that
+// landed between finger down and click.
 function buttons(name, max) {
   const el = document.getElementById(name);
-  el.innerHTML = '';
-  const truth = state.truth || {};
-  for (const v of [...Array(max + 1).keys(), null]) {
-    const b = document.createElement('button');
-    b.textContent = v === null ? '?' : v;
-    if ((truth[name] ?? null) === v) b.className = 'on';
-    b.onclick = () => post('/truth?' + name + '=' + (v === null ? '' : v));
-    el.appendChild(b);
+  const values = [...Array(max + 1).keys(), null];
+  if (el.children.length !== values.length) {
+    el.innerHTML = '';
+    for (const v of values) {
+      const b = document.createElement('button');
+      b.textContent = v === null ? '?' : v;
+      b.dataset.value = v === null ? '' : v;
+      b.onclick = () => post('/truth?' + name + '=' + b.dataset.value);
+      el.appendChild(b);
+    }
   }
+  const want = String((state.truth || {})[name] ?? '');
+  for (const b of el.children) b.className = b.dataset.value === want ? 'on' : '';
 }
 
 function cell(name) {

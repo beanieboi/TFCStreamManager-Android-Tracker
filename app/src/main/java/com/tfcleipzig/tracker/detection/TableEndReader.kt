@@ -21,7 +21,7 @@ import kotlin.math.abs
  * is: two bars of the same pitch, free stretches as long as they really are, no blank gap where a
  * stone should be. A count that fails is null, and [Reading.problems] says why.
  */
-class TableEndReader {
+class TableEndReader : CounterReader {
     data class Reading(
         val goals: Int?,
         val sets: Int?,
@@ -47,7 +47,7 @@ class TableEndReader {
         val stoneLuma: Float? = null,
     )
 
-    fun read(frame: Frame): Reading {
+    override fun read(frame: Frame): Reading {
         val line = StoneLine.find(frame) ?: return Reading(null, null, null, null, null, null, listOf("no stone line"))
         val kinds = BarScan.classify(frame, line)
         // First pass with a rough pitch to find the bars.
@@ -127,7 +127,7 @@ class TableEndReader {
     }
 
     /** 90th percentile luma over the stone runs of both bars, around the stone line. */
-    private fun stoneLuma(
+    internal fun stoneLuma(
         frame: Frame,
         line: StoneLine.Line,
         vararg bars: BarScan.Bar,
@@ -163,7 +163,7 @@ class TableEndReader {
      * chroma, so glare that turns a green face white to [BarScan.classify] only weakens it).
      * Independent of the counts, so it works while a count is unreadable.
      */
-    private fun end(
+    internal fun end(
         frame: Frame,
         line: StoneLine.Line,
         setBar: BarScan.Bar,

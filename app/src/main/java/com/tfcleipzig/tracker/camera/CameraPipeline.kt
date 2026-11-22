@@ -10,6 +10,7 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -40,6 +41,9 @@ class CameraPipeline(
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var analysis: ImageAnalysis? = null
+
+    /** The zoom last asked for, set again whenever the camera (re)opens. */
+    private var requestedZoom: Float? = null
 
     /** Zoom the camera runs at and its range, once bound; for the HUD. */
     data class Zoom(
@@ -100,6 +104,11 @@ class CameraPipeline(
 
             provider.unbindAll()
             camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
+            // CameraX drops a zoom set while the camera isn't open yet (it is still opening here,
+            // and closes whenever the screen goes off); set it again each time it opens.
+            camera?.cameraInfo?.cameraState?.observe(lifecycleOwner) { state ->
+                if (state.type == CameraState.Type.OPEN) requestedZoom?.let { camera?.cameraControl?.setZoomRatio(it) }
+            }
             setZoom(zoomRatio)
             setExposure(exposureIndex, locked = false)
             onBound()
@@ -153,13 +162,15 @@ class CameraPipeline(
     /**
      * Manual exposure: auto exposure off, the sensor at [exposureNs] and [iso] (clamped by the
      * camera), white balance locked. Auto exposure meters the whole frame, mostly dark floor
-     * around a lit table, and overexposes the counters. [setExposure] goes back to auto.
-     * Call on the main thread; false before [start] bound.
+     * around a lit table, and overexposes the counters. [frameDurationNs] sets the frame rate (at
+     * least the exposure time): reading a few frames a second is enough, and fewer frames keep the
+     * phone cool. [setExposure] goes back to auto. Call on the main thread; false before [start] bound.
      */
     @OptIn(ExperimentalCamera2Interop::class)
     fun setManualExposure(
         exposureNs: Long,
         iso: Int,
+        frameDurationNs: Long = FAST_FRAME_NS,
     ): Boolean {
         val camera = camera ?: return false
         val options =
@@ -168,9 +179,13 @@ class CameraPipeline(
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(frameDurationNs, exposureNs))
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+        // The WP5's camera ignores the frame duration; its fixed frame rate ranges are the other
+        // way to slow it down. 10 fps is its slowest.
+        if (frameDurationNs >= SLOW_FRAME_NS) options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, SLOW_FPS)
         Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options.build())
-        Log.i(TAG, "manual exposure ${exposureNs / 1000} us, iso $iso")
+        Log.i(TAG, "manual exposure ${exposureNs / 1000} us, iso $iso, frame ${frameDurationNs / 1_000_000} ms")
         return true
     }
 
@@ -212,6 +227,7 @@ class CameraPipeline(
         val min = state?.minZoomRatio ?: 1f
         val max = state?.maxZoomRatio ?: ratio
         val zoom = Zoom(ratio.coerceIn(min, max), min, max)
+        requestedZoom = zoom.ratio
         camera.cameraControl.setZoomRatio(zoom.ratio)
         Log.i(TAG, "zoom ${zoom.ratio} (range $min..$max)")
         onZoom(zoom)
@@ -233,6 +249,11 @@ class CameraPipeline(
 
         /** The zoom the reference photos in `testdata/` were taken at. */
         const val DEFAULT_ZOOM = 1.94f
+
+        /** Frame durations: 30 fps while calibrating (many settings to score), 5 fps while reading. */
+        const val FAST_FRAME_NS = 33_333_333L
+        const val SLOW_FRAME_NS = 200_000_000L
+        private val SLOW_FPS = android.util.Range(10, 10)
 
         private const val TAG = "CameraPipeline"
     }

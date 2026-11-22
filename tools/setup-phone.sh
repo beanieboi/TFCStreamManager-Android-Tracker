@@ -49,6 +49,8 @@ else
 fi
 dsh pm grant "$PKG" android.permission.CAMERA
 dsh cmd package set-home-activity "$PKG/.MainActivity"
+# The app shortens the screen timeout on battery so the camera stops and the phone lasts (PowerIdle).
+dsh appops set "$PKG" WRITE_SETTINGS allow
 dsh dumpsys deviceidle whitelist "+$PKG" >/dev/null
 
 log "screen and Wi-Fi"

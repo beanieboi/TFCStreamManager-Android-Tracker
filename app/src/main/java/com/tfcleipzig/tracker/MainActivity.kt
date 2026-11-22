@@ -12,7 +12,9 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings.Secure
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +45,7 @@ import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
 import com.tfcleipzig.tracker.net.TrackerReport
+import com.tfcleipzig.tracker.power.PowerIdle
 import com.tfcleipzig.tracker.settings.TrackerSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -176,7 +179,34 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch { discovery.server.collect { renderStatus() } }
         startReporting()
+        darkScreen()
+        power = PowerIdle(this, keepScreenOn = { binding.root.keepScreenOn = it }, onChange = { powerStatus = it })
+        power.start()
         checkPhotoExtra(intent)
+    }
+
+    /** Idles on battery, wakes on power (see [PowerIdle]). */
+    private lateinit var power: PowerIdle
+
+    @Volatile private var powerStatus = "-"
+
+    /**
+     * Backlight at its lowest: nobody watches the phone during operations, and the screen has to
+     * stay on for the camera (it stops with the activity). A touch lights it for [SCREEN_LIT_MS].
+     */
+    private fun darkScreen() {
+        window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF }
+    }
+
+    private val dim = Runnable { darkScreen() }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+            binding.root.removeCallbacks(dim)
+            binding.root.postDelayed(dim, SCREEN_LIT_MS)
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     /** Last report to the server, for the HUD. */
@@ -298,7 +328,7 @@ class MainActivity : AppCompatActivity() {
     /** The saved manual exposure on the camera, tracked from there; main thread. */
     private fun useSavedExposure() {
         val e = settings.exposure
-        camera.setManualExposure(e.exposureNs, e.iso)
+        camera.setManualExposure(e.exposureNs, e.iso, CameraPipeline.SLOW_FRAME_NS)
         tracker = ExposureTracker(settings.stoneLuma, e)
     }
 
@@ -324,13 +354,20 @@ class MainActivity : AppCompatActivity() {
         for (command in commands) {
             when (command) {
                 is Calibrator.Command.Zoom -> camera.setZoom(command.ratio)
-                is Calibrator.Command.SetExposure -> camera.setManualExposure(command.exposure.exposureNs, command.exposure.iso)
+                is Calibrator.Command.SetExposure ->
+                    camera.setManualExposure(
+                        command.exposure.exposureNs,
+                        command.exposure.iso,
+                        CameraPipeline.FAST_FRAME_NS,
+                    )
                 is Calibrator.Command.Done -> {
                     settings.zoom = command.zoom
                     settings.exposure = command.exposure
                     settings.stoneLuma = command.stoneLuma
                     settings.rotation = command.rotation
                     tracker = ExposureTracker(command.stoneLuma, command.exposure)
+                    // Back to reading speed.
+                    camera.setManualExposure(command.exposure.exposureNs, command.exposure.iso, CameraPipeline.SLOW_FRAME_NS)
                     needsFocus = true
                     settings.calibrated = true
                     calibrator = null
@@ -341,6 +378,7 @@ class MainActivity : AppCompatActivity() {
                     calibrator = null
                     // The camera is back at the start exposure; keep it tracking if there was a calibration.
                     if (settings.calibrated) tracker = ExposureTracker(settings.stoneLuma, command.exposure)
+                    camera.setManualExposure(command.exposure.exposureNs, command.exposure.iso, CameraPipeline.SLOW_FRAME_NS)
                     calibration = c.status
                     Log.w(TAG, "calibration ${c.status}")
                 }
@@ -421,7 +459,7 @@ class MainActivity : AppCompatActivity() {
         e: ExposureTracker.Exposure,
     ) {
         if (tracker !== t) return // calibration, sweep or a hand setting took over meanwhile
-        camera.setManualExposure(e.exposureNs, e.iso)
+        camera.setManualExposure(e.exposureNs, e.iso, CameraPipeline.SLOW_FRAME_NS)
         settings.exposure = e
         Log.i(TAG, "light changed: exposure %.1f ms iso %d".format(e.exposureNs / 1e6, e.iso))
     }
@@ -439,7 +477,7 @@ class MainActivity : AppCompatActivity() {
         calibrator = null
         tracker = null
         stopSweep(restore = false)
-        if (camera.setManualExposure(exposureNs, iso)) manual = Manual(exposureNs, iso)
+        if (camera.setManualExposure(exposureNs, iso, CameraPipeline.SLOW_FRAME_NS)) manual = Manual(exposureNs, iso)
     }
 
     /** Cycles zoom × exposure for a recording (see [CameraSweep]); main thread. */
@@ -513,6 +551,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (::power.isInitialized) power.stop()
         debugServer?.stop()
         recorder.stop()
         sweep?.stop()
@@ -527,6 +566,8 @@ class MainActivity : AppCompatActivity() {
                 NoopBallDetector(),
                 goals,
                 rotations = { calibrator?.rotations ?: listOf(settings.rotation) },
+                // Calibration and sweeps score many frames per setting; reading needs a few a second.
+                minIntervalMs = { if (calibrator != null || sweep != null) 0L else READ_INTERVAL_MS },
                 onFrame = { frame, reading, readMs ->
                     val z = zoom
                     val e = exposure
@@ -556,7 +597,9 @@ class MainActivity : AppCompatActivity() {
                 stats = s
                 binding.status.post { renderStatus() }
             }
-        camera.start(binding.preview, analyzer, settings.zoom) { onCameraBound() }
+        // No preview: nobody looks at the phone during operations, and the stream and its drawing
+        // cost a camera stream and the GPU. The debug page shows the picture.
+        camera.start(null, analyzer, settings.zoom) { onCameraBound() }
     }
 
     /**
@@ -692,6 +735,7 @@ class MainActivity : AppCompatActivity() {
                 appendLine("calib  ${calibrator?.status ?: calibration}")
                 appendLine("sync   $syncStatus  report $reportStatus")
                 appendLine("light  ${exposureInfo()}")
+                appendLine("power  $powerStatus")
                 if (recorder.recording) appendLine("rec    ${recorder.session?.name}  ${recorder.frames} frames, ${recorder.rawFrames} raw")
                 appendLine("debug  http://${wifiAddress() ?: "?"}:${DebugServer.PORT}/")
                 if (s != null) {
@@ -755,8 +799,14 @@ class MainActivity : AppCompatActivity() {
         /** Focus region: both bars' span times this. */
         const val FOCUS_MARGIN = 1.3f
 
-        /** Readings in a row that must agree before a score is sent: about 0.5 s at 25 fps. */
-        const val SYNC_STEADY_READINGS = 12
+        /** Readings in a row that must agree before a score is sent: about 0.8 s at 5 readings a second. */
+        const val SYNC_STEADY_READINGS = 4
+
+        /** Reading rate outside calibration: 5 a second is plenty for a score and keeps the phone cool. */
+        const val READ_INTERVAL_MS = 200L
+
+        /** How long a touch lights the dark screen. */
+        const val SCREEN_LIT_MS = 60_000L
 
         // TODO: calibrate per table (tap goal corners on the preview) and persist.
         val DEFAULT_GOALS =

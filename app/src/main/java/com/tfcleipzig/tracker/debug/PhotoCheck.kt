@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Paint
+import com.tfcleipzig.tracker.detection.CounterReader
+import com.tfcleipzig.tracker.detection.DotReader
 import com.tfcleipzig.tracker.detection.Frame
 import com.tfcleipzig.tracker.detection.TableEndReader
 
@@ -12,7 +14,7 @@ import com.tfcleipzig.tracker.detection.TableEndReader
  * scaled to the analysis size first, so a photo taken from the tracker's mount reads like a frame.
  */
 class PhotoCheck(
-    private val reader: TableEndReader = TableEndReader(),
+    private val reader: CounterReader = DotReader(),
 ) {
     data class Result(
         /** The photo at analysis size with the counter line and bars drawn on it. */
