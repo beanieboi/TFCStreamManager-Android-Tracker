@@ -7,7 +7,14 @@
 <style>
   :root { color-scheme: dark; --bg: #111; --fg: #eee; --dim: #888; --on: #2e9e4f; --warn: #c0392b; --btn: #333; }
   body { margin: 0; padding: 12px; background: var(--bg); color: var(--fg); font: 15px system-ui, sans-serif; }
-  img { width: 100%; max-width: 640px; display: block; background: #000; border-radius: 6px; }
+  img { width: 100%; display: block; background: #000; border-radius: 6px; }
+  /* Picture left, controls right on wide screens; stacked on phones. */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  @media (min-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr) minmax(360px, 480px); align-items: start; }
+    .picture { position: sticky; top: 12px; }
+  }
+  .controls h2:first-child { margin-top: 0; }
   h2 { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
   .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .row .label { width: 80px; color: var(--dim); }
@@ -19,10 +26,14 @@
   input { height: 40px; flex: 1; min-width: 0; font-size: 16px; background: #1b1b1b; color: var(--fg);
           border: 1px solid #333; border-radius: 6px; padding: 0 8px; }
   .ok { color: #6c6; } .bad { color: #e66; }
+  input[type=range] { height: 40px; border: 0; background: none; padding: 0; }
+  .value { width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
-<img id="live" alt="live camera">
+<div class="layout">
+<div class="picture"><img id="live" alt="live camera"></div>
+<div class="controls">
 
 <h2>Reading</h2>
 <pre id="reading">…</pre>
@@ -33,6 +44,17 @@
 <div class="row" style="margin-top:6px"><span class="label">timeouts</span><span id="timeouts" class="row"></span></div>
 <div class="row" style="margin-top:10px">
   <button id="hand" onclick="post('/hand?on=' + (state.hand ? 0 : 1))">hands on / moving</button>
+</div>
+
+<h2>Exposure</h2>
+<div class="row"><span class="label">time</span><input id="ns" type="range" min="0" max="1000" value="700"><span id="nsv" class="value"></span></div>
+<div class="row"><span class="label">iso</span><input id="iso" type="range" min="100" max="2400" step="50" value="800"><span id="isov" class="value"></span></div>
+<div class="row"><span class="label">zoom</span><input id="zoom" type="range" min="1" max="4" step="0.05" value="1.5"><span id="zoomv" class="value"></span></div>
+<div class="row" style="margin-top:6px">
+  <button id="manual" onclick="setManual()">manual</button>
+  <button id="auto" onclick="post('/manual?ns=0')">auto</button>
+  <button onclick="post('/focus')">focus on counters</button>
+  <span id="hits" class="value" style="width:auto"></span>
 </div>
 
 <h2>Session</h2>
@@ -49,11 +71,51 @@
 <h2>Phone</h2>
 <pre id="phone">…</pre>
 
+</div>
+</div>
+
 <script>
 let state = {};
 const counters = { goals: 7, sets: 3, timeouts: 2 };
 
 function post(url) { return fetch(url, { method: 'POST' }).then(refresh); }
+
+// Exposure time slider: logarithmic, 0.1 ms .. 33 ms (one frame at 30 fps).
+const NS_MIN = 1e5, NS_MAX = 33e6;
+const nsAt = v => Math.round(NS_MIN * Math.pow(NS_MAX / NS_MIN, v / 1000));
+const sliderAt = ns => Math.round(1000 * Math.log(ns / NS_MIN) / Math.log(NS_MAX / NS_MIN));
+function showManual() {
+  document.getElementById('nsv').textContent = (nsAt(+document.getElementById('ns').value) / 1e6).toFixed(2) + ' ms';
+  document.getElementById('isov').textContent = 'ISO ' + document.getElementById('iso').value;
+  document.getElementById('zoomv').textContent = (+document.getElementById('zoom').value).toFixed(2) + '×';
+}
+let manualTimer = null;
+function setManual() {
+  clearTimeout(manualTimer);
+  manualTimer = setTimeout(() => post('/manual?ns=' + nsAt(+document.getElementById('ns').value) +
+    '&iso=' + document.getElementById('iso').value), 150);
+}
+let zoomTimer = null, zoomDragging = 0;
+function setZoom() {
+  clearTimeout(zoomTimer);
+  zoomDragging = Date.now();
+  zoomTimer = setTimeout(() => post('/zoom?ratio=' + document.getElementById('zoom').value), 150);
+}
+let synced = false;
+document.getElementById('zoom').oninput = () => { showManual(); setZoom(); };
+for (const id of ['ns', 'iso']) document.getElementById(id).oninput = () => { showManual(); setManual(); };
+
+// Hit rate: the last 20 readings against the truth set above.
+const recent = [];
+function hits(s) {
+  const t = s.truth || {}, r = s.reading;
+  if (t.goals == null || t.sets == null || t.timeouts == null) return 'set the truth to see the hit rate';
+  const v = r.goals == null || r.sets == null || r.timeouts == null ? 'miss'
+    : r.goals === t.goals && r.sets === t.sets && r.timeouts === t.timeouts ? 'ok' : 'WRONG';
+  recent.push(v); if (recent.length > 20) recent.shift();
+  const n = k => recent.filter(x => x === k).length;
+  return 'last ' + recent.length + ': ' + n('ok') + ' ok, ' + n('miss') + ' miss, ' + n('WRONG') + ' wrong';
+}
 
 function buttons(name, max) {
   const el = document.getElementById(name);
@@ -86,7 +148,20 @@ function refresh() {
       'recording ' + (s.recording ? s.session + '  ' + s.frames + ' frames, ' + s.rawFrames + ' raw, ' + s.skipped + ' skipped' : 'off') + '\n' +
       'camera    zoom ' + (s.zoom ?? '?') + '  exposure ' + (s.exposure ?? '?') + (s.locked ? ' locked' : ' auto') +
         (s.mode ? '  [' + s.mode + ']' : '') + '  ' + s.fps.toFixed(1) + ' fps\n' +
-      'calib     ' + s.calibration;
+      'calib     ' + s.calibration + '\n' +
+      'sync      ' + (s.sync ?? '-') + '\n' +
+      'focus     ' + (s.focus ?? '-');
+    document.getElementById('manual').className = s.manual ? 'on' : '';
+    document.getElementById('auto').className = s.manual ? '' : 'on';
+    if (!synced && s.manual) {
+      const m = s.manual.match(/(\d+) us iso (\d+)/);
+      if (m) { document.getElementById('ns').value = sliderAt(+m[1] * 1000); document.getElementById('iso').value = m[2]; }
+      synced = true;
+    }
+    // Follow the phone's zoom (calibration changes it) unless the slider was just moved.
+    if (s.zoom && Date.now() - zoomDragging > 2000) document.getElementById('zoom').value = s.zoom;
+    showManual();
+    document.getElementById('hits').textContent = hits(s);
     for (const [name, max] of Object.entries(counters)) buttons(name, max);
     document.getElementById('hand').className = s.hand ? 'warn' : '';
     document.getElementById('rec').className = s.recording ? 'warn' : '';

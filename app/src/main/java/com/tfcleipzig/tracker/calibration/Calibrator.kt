@@ -1,5 +1,6 @@
 package com.tfcleipzig.tracker.calibration
 
+import com.tfcleipzig.tracker.detection.Rotation
 import com.tfcleipzig.tracker.detection.TableEndReader
 import kotlin.math.abs
 import kotlin.math.floor
@@ -11,7 +12,11 @@ import kotlin.math.min
  * the frames each one gives. Plain logic: [feed] it every reading (analysis thread), carry out the
  * [Command]s it returns on the camera.
  *
- * 1. Find: the saved zoom, else 1×, 1.5×, … until both bars show up.
+ * 1. Find: the saved zoom, else 1×, 1.5×, … until the counters read (goals, sets and timeouts)
+ *    in at least half the frames. Bars alone aren't enough: a bar cut off by the frame edge still
+ *    looks like a bar. Every frame is read in all four [Rotation]s (the phone can hang any way
+ *    round); the rotation that reads most often wins and is kept from then on. The saved rotation
+ *    wins ties.
  * 2. Zoom: the largest zoom that keeps [marginPitches] of free frame around the bars. Digital
  *    zoom crops around the frame centre and a margin measured in pitches doesn't change with zoom,
  *    so one reading gives it. Kept if it scores no worse than the zoom it came from.
@@ -27,6 +32,7 @@ class Calibrator(
     private val zoomRange: ClosedFloatingPointRange<Float>,
     private val exposureRange: IntRange,
     private val startZoom: Float,
+    private val startRotation: Rotation = Rotation.R0,
     private val settleFrames: Int = 10,
     private val measureFrames: Int = 20,
     private val marginPitches: Float = 1.5f,
@@ -45,6 +51,7 @@ class Calibrator(
             val zoom: Float,
             val exposure: Int,
             val score: Float,
+            val rotation: Rotation,
         ) : Command
 
         /** Nothing worked; the camera is back at [zoom], exposure 0, unlocked. */
@@ -60,7 +67,14 @@ class Calibrator(
     private var zoom = startZoom
     private var exposure = 0
     private var frames = 0
+
+    /** The rotation the readings are scored in; during find, the one that leads so far. */
+    @Volatile var rotation = startRotation
+        private set
     private val window = mutableListOf<TableEndReader.Reading>()
+
+    /** During find, the other rotations' readings of the same frames. */
+    private val otherWindows = mutableMapOf<Rotation, MutableList<TableEndReader.Reading>>()
 
     private val findZooms =
         (listOf(startZoom) + FIND_ZOOMS.filter { abs(it - startZoom) > 0.1f })
@@ -77,6 +91,10 @@ class Calibrator(
 
     val finished get() = phase == Phase.DONE
 
+    /** The rotations to read each frame in and [feed]: all four while finding, then just [rotation]. */
+    val rotations: List<Rotation>
+        get() = if (phase == Phase.FIND) listOf(rotation) + Rotation.entries.filter { it != rotation } else listOf(rotation)
+
     /** The commands to start with: exposure unlocked at 0, the first zoom to try. */
     fun start(): List<Command> {
         zoom = findZooms.removeAt(0)
@@ -84,13 +102,25 @@ class Calibrator(
         return listOf(Command.Exposure(0, locked = false), Command.Zoom(zoom))
     }
 
-    /** One frame's reading at [width]×[height]; returns what to change, often nothing. */
+    /** One frame's reading at [width]×[height], in [rotation]; returns what to change, often nothing. */
     fun feed(
         reading: TableEndReader.Reading,
         width: Int,
         height: Int,
+    ): List<Command> = feed(mapOf(rotation to reading), width, height)
+
+    /**
+     * One frame read in each of [rotations]; [width]×[height] is the frame before turning.
+     * Returns what to change, often nothing.
+     */
+    fun feed(
+        readings: Map<Rotation, TableEndReader.Reading>,
+        width: Int,
+        height: Int,
     ): List<Command> {
         if (phase == Phase.DONE) return emptyList()
+        // A frame read before the rotation changed: not in the one being scored.
+        val reading = readings[rotation] ?: return emptyList()
         frames++
         if (frames <= settleFrames) return emptyList()
         if (phase == Phase.LOCK && !lockSent) {
@@ -100,32 +130,58 @@ class Calibrator(
             return listOf(Command.Exposure(exposure, locked = true))
         }
         window += reading
+        if (phase == Phase.FIND) {
+            for ((r, other) in readings) if (r != rotation) otherWindows.getOrPut(r) { mutableListOf() } += other
+        }
         if (window.size < measureFrames) return emptyList()
 
         val measured = window.toList()
         window.clear()
+        val others = otherWindows.toMap()
+        otherWindows.clear()
         frames = 0
         val score = score(measured)
         return when (phase) {
-            Phase.FIND -> afterFind(measured, score, width, height)
+            Phase.FIND -> afterFind(bestRotation(measured, others), width, height)
             Phase.ZOOM -> afterZoom(score)
             Phase.EXPOSURE -> afterExposure(score)
             Phase.LOCK -> {
                 phase = Phase.DONE
                 status = "done: zoom %.2f, exposure %+d, score %.2f".format(zoom, exposure, score)
-                listOf(Command.Done(zoom, exposure, score))
+                listOf(Command.Done(zoom, exposure, score, rotation))
             }
             Phase.DONE -> emptyList()
         }
     }
 
+    /**
+     * The rotation whose readings show both bars most often (ties: the leading one, then the
+     * better score); switches [rotation] to it and returns its readings.
+     */
+    private fun bestRotation(
+        measured: List<TableEndReader.Reading>,
+        others: Map<Rotation, List<TableEndReader.Reading>>,
+    ): List<TableEndReader.Reading> {
+        val candidates = listOf(rotation to measured) + others.filterValues { it.size == measured.size }.toList()
+        val best =
+            candidates.maxWith(
+                compareBy<Pair<Rotation, List<TableEndReader.Reading>>> { (_, rs) -> rs.count(::reads) }
+                    .thenBy { (_, rs) -> rs.count(::hasBars) }
+                    .thenBy { (r, _) -> if (r == rotation) 1 else 0 }
+                    .thenBy { (_, rs) -> score(rs) },
+            )
+        rotation = best.first
+        return best.second
+    }
+
     private fun afterFind(
         measured: List<TableEndReader.Reading>,
-        score: Float,
-        width: Int,
-        height: Int,
+        rawWidth: Int,
+        rawHeight: Int,
     ): List<Command> {
-        val withBars = measured.filter { it.line != null && it.setBar != null && it.goalBar != null }
+        val score = score(measured)
+        val (width, height) = rotation.size(rawWidth, rawHeight)
+        val withBars = measured.filter(::reads)
         if (withBars.size * 2 < measured.size) {
             if (findZooms.isEmpty()) {
                 phase = Phase.DONE
@@ -136,6 +192,7 @@ class Calibrator(
             status = "find bars at zoom %.2f".format(zoom)
             return listOf(Command.Zoom(zoom))
         }
+        status = "bars found, rotation ${rotation.degrees}°"
         bestZoomScore = score
         val factor = withBars.mapNotNull { zoomFactor(it, width, height, marginPitches) }.sorted().let { it[it.size / 2] }
         val target = (floor(zoom * factor / ZOOM_STEP) * ZOOM_STEP).coerceIn(zoomRange.start, zoomRange.endInclusive)
@@ -194,6 +251,12 @@ class Calibrator(
 
         /** Exposures within this share of the best count as tied. */
         const val TIE = 0.95f
+
+        fun hasBars(reading: TableEndReader.Reading) = reading.line != null && reading.setBar != null && reading.goalBar != null
+
+        /** All three counters read, so the bars are whole and the right ones. */
+        fun reads(reading: TableEndReader.Reading) =
+            hasBars(reading) && reading.goals != null && reading.sets != null && reading.timeouts != null
 
         /**
          * Summed confidence of the frames that read the most common (goals, sets, timeouts), over

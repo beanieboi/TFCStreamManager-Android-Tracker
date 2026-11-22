@@ -5,11 +5,12 @@ import android.content.Intent
 import androidx.core.content.edit
 import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.detection.EndVote
+import com.tfcleipzig.tracker.detection.Rotation
 import com.tfcleipzig.tracker.detection.Side
 
 /**
  * Per-phone setup, kept across restarts: which team's score the phone's table end shows, and the
- * camera zoom and exposure that read the counters best. The end is detected ([EndVote]); zoom and
+ * camera zoom, exposure and frame rotation that read the counters best. The end is detected ([EndVote]); zoom and
  * exposure are found by calibration ([com.tfcleipzig.tracker.calibration.Calibrator]) and can be
  * nudged by hand.
  *
@@ -37,6 +38,11 @@ class TrackerSettings(
     var calibrated: Boolean
         get() = prefs.getBoolean(KEY_CALIBRATED, false)
         set(value) = prefs.edit { putBoolean(KEY_CALIBRATED, value) }
+
+    /** How the phone hangs: the turn that puts the counters upright. Found by calibration only. */
+    var rotation: Rotation
+        get() = prefs.getString(KEY_ROTATION, null)?.let { runCatching { Rotation.valueOf(it) }.getOrNull() } ?: Rotation.R0
+        set(value) = prefs.edit { putString(KEY_ROTATION, value.name) }
 
     /** Requested zoom; the camera clamps it to its range. */
     var zoom: Float
@@ -74,5 +80,6 @@ class TrackerSettings(
         const val KEY_ZOOM = "zoom"
         const val KEY_EXPOSURE = "exposure"
         const val KEY_CALIBRATED = "calibrated"
+        const val KEY_ROTATION = "rotation"
     }
 }

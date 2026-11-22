@@ -34,9 +34,37 @@ class DebugPage(
         val exposureLocked: Boolean
         val mode: String
         val calibration: String
+
+        /** Degrees the frames are turned clockwise before reading. */
+        val rotation: Int
+
+        /** Last score sync with the server. */
+        val sync: String
         val sweeping: Boolean
 
+        /** Manual sensor exposure, e.g. "8000 us iso 100"; null when auto. */
+        val manual: String?
+
         fun calibrate()
+
+        /** Last focus on the counters: "auto", "focusing", "on counters", ... */
+        val focus: String
+
+        /** Manual exposure at [exposureNs] and [iso]; [exposureNs] 0 goes back to auto. */
+        fun manual(
+            exposureNs: Long,
+            iso: Int,
+        )
+
+        /** Focus on the counters at the next reading that finds them, or on ([x], [y]) of the camera frame, [size] wide. */
+        fun focus(
+            x: Float?,
+            y: Float?,
+            size: Float?,
+        )
+
+        /** Zoom by hand; kept as the phone's zoom. */
+        fun zoom(ratio: Float)
 
         fun sweep(on: Boolean)
     }
@@ -68,6 +96,9 @@ class DebugPage(
             "/mark" -> p["text"]?.takeIf { it.isNotBlank() }?.let { recorder.mark(it) }
             "/calibrate" -> host.calibrate()
             "/sweep" -> host.sweep(p["on"] == "1")
+            "/manual" -> host.manual(p["ns"]?.toLongOrNull() ?: 0L, p["iso"]?.toIntOrNull() ?: 100)
+            "/focus" -> host.focus(p["x"]?.toFloatOrNull(), p["y"]?.toFloatOrNull(), p["size"]?.toFloatOrNull())
+            "/zoom" -> p["ratio"]?.toFloatOrNull()?.let(host::zoom)
             else -> return Response.notFound
         }
         return Response.json(state())
@@ -99,6 +130,10 @@ class DebugPage(
             put("locked", host.exposureLocked)
             put("mode", host.mode)
             put("calibration", host.calibration)
+            put("rotation", host.rotation)
+            put("sync", host.sync)
+            put("manual", host.manual)
+            put("focus", host.focus)
             put("sweep", host.sweeping)
             put("recording", recorder.recording)
             put("session", recorder.session?.name)

@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.tfcleipzig.tracker.calibration.Calibrator
+import com.tfcleipzig.tracker.calibration.LostWatch
 import com.tfcleipzig.tracker.camera.CameraPipeline
 import com.tfcleipzig.tracker.camera.FrameAnalyzer
 import com.tfcleipzig.tracker.databinding.ActivityMainBinding
@@ -26,6 +27,7 @@ import com.tfcleipzig.tracker.debug.Recorder
 import com.tfcleipzig.tracker.detection.EndVote
 import com.tfcleipzig.tracker.detection.GoalDetector
 import com.tfcleipzig.tracker.detection.NoopBallDetector
+import com.tfcleipzig.tracker.detection.ScoreSync
 import com.tfcleipzig.tracker.detection.Side
 import com.tfcleipzig.tracker.detection.TableEnd
 import com.tfcleipzig.tracker.detection.TableEndReader
@@ -59,6 +61,22 @@ class MainActivity : AppCompatActivity() {
     /** Camera sweep for recordings, from the debug page; null when off. */
     @Volatile private var sweep: CameraSweep? = null
 
+    /** Manual sensor exposure set from the debug page; null when auto. */
+    private data class Manual(
+        val exposureNs: Long,
+        val iso: Int,
+    ) {
+        override fun toString() = "${exposureNs / 1000} us iso $iso"
+    }
+
+    @Volatile private var manual: Manual? = null
+
+    /** Focus on the counters at the next reading that finds both bars (start, after calibration, debug page). */
+    @Volatile private var needsFocus = true
+
+    /** Last focus on the counters, for the HUD and debug page. */
+    @Volatile private var focusStatus = "auto"
+
     private lateinit var recorder: Recorder
     private var debugServer: DebugServer? = null
 
@@ -73,6 +91,15 @@ class MainActivity : AppCompatActivity() {
 
     /** Which end of the table the camera sees, settled over the frames since start. */
     private val endVote = EndVote()
+
+    /** Counters gone for a few frames in a row outside calibration: calibrate again. */
+    private val lost = LostWatch(LOST_FRAMES)
+
+    /** Steady counter readings go to the server (see [ScoreSync]). */
+    private val scoreSync = ScoreSync(SYNC_STEADY_READINGS)
+
+    /** Last sync outcome, for the HUD. */
+    @Volatile private var syncStatus = "-"
 
     @Volatile private var end: TableEnd? = null
 
@@ -181,8 +208,10 @@ class MainActivity : AppCompatActivity() {
     /** Finds zoom and exposure for the counters (see [Calibrator]); replaces a running one. */
     private fun startCalibration() {
         stopSweep(restore = false)
+        manual = null
         val zoomRange = camera.zoomRange() ?: return
-        val c = Calibrator(zoomRange, camera.exposureRange() ?: 0..0, settings.zoom)
+        val c = Calibrator(zoomRange, camera.exposureRange() ?: 0..0, settings.zoom, settings.rotation)
+        lost.reset()
         calibrator = c
         Log.i(TAG, "calibration started")
         applyCalibration(c, c.start())
@@ -201,6 +230,8 @@ class MainActivity : AppCompatActivity() {
                 is Calibrator.Command.Done -> {
                     settings.zoom = command.zoom
                     settings.exposure = command.exposure
+                    settings.rotation = command.rotation
+                    needsFocus = true
                     settings.calibrated = true
                     calibrator = null
                     calibration = c.status
@@ -221,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         when {
             calibrator != null -> "calibrate"
             sweep != null -> "sweep"
+            manual != null -> "manual $manual"
             else -> ""
         }
 
@@ -236,6 +268,37 @@ class MainActivity : AppCompatActivity() {
                 override val exposureLocked get() = this@MainActivity.exposure?.locked ?: false
                 override val mode get() = this@MainActivity.mode
                 override val calibration get() = calibrator?.status ?: this@MainActivity.calibration
+                override val rotation get() = stats?.rotation?.degrees ?: settings.rotation.degrees
+                override val sync get() = syncStatus
+                override val manual get() = this@MainActivity.manual?.toString()
+
+                override fun manual(
+                    exposureNs: Long,
+                    iso: Int,
+                ) = runOnUiThread { setManual(exposureNs, iso) }
+
+                override val focus get() = focusStatus
+
+                override fun focus(
+                    x: Float?,
+                    y: Float?,
+                    size: Float?,
+                ) {
+                    if (x == null || y == null) {
+                        needsFocus = true
+                        return
+                    }
+                    focusStatus = "focusing on (%.2f, %.2f)".format(x, y)
+                    runOnUiThread {
+                        camera.focusOn(x, y, size ?: 0.15f) { ok ->
+                            focusStatus =
+                                "on (%.2f, %.2f) %s".format(x, y, if (ok) "ok" else "not confirmed")
+                        }
+                    }
+                }
+
+                override fun zoom(ratio: Float) = runOnUiThread { setZoomTo(ratio) }
+
                 override val sweeping get() = sweep != null
 
                 override fun calibrate() = runOnUiThread { startCalibration() }
@@ -249,9 +312,25 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    /** Manual exposure from the debug page, or back to the saved auto exposure for 0; main thread. */
+    private fun setManual(
+        exposureNs: Long,
+        iso: Int,
+    ) {
+        if (exposureNs <= 0L) {
+            manual = null
+            camera.setExposure(settings.exposure, locked = settings.calibrated)
+            return
+        }
+        calibrator = null
+        stopSweep(restore = false)
+        if (camera.setManualExposure(exposureNs, iso)) manual = Manual(exposureNs, iso)
+    }
+
     /** Cycles zoom × exposure for a recording (see [CameraSweep]); main thread. */
     private fun startSweep() {
         if (sweep != null) return
+        manual = null
         calibrator = null
         val zooms = CameraSweep.zoomsAround(settings.zoom, camera.zoomRange() ?: return)
         sweep =
@@ -284,6 +363,15 @@ class MainActivity : AppCompatActivity() {
         val current = zoom?.ratio ?: settings.zoom
         val next = Math.round((current + step) * 100) / 100f
         camera.setZoom(next)?.let { settings.zoom = it.ratio }
+        needsFocus = true
+    }
+
+    /** Zoom set by hand from the debug page; overrides calibration or sweep, kept. Main thread. */
+    private fun setZoomTo(ratio: Float) {
+        calibrator = null
+        stopSweep(restore = false)
+        camera.setZoom(ratio)?.let { settings.zoom = it.ratio }
+        needsFocus = true
     }
 
     private fun renderSetup() {
@@ -328,6 +416,7 @@ class MainActivity : AppCompatActivity() {
             FrameAnalyzer(
                 NoopBallDetector(),
                 goals,
+                rotations = { calibrator?.rotations ?: listOf(settings.rotation) },
                 onFrame = { frame, reading, readMs ->
                     val z = zoom
                     val e = exposure
@@ -337,14 +426,73 @@ class MainActivity : AppCompatActivity() {
                 val settled = endVote.add(s.counters.end)
                 if (settled != end) Log.i(TAG, "table end $settled")
                 end = settled
-                calibrator?.let { c ->
-                    val commands = c.feed(s.counters, s.width, s.height)
+                if (needsFocus && calibrator == null) focusOnCounters(s)
+                val c = calibrator
+                if (c != null) {
+                    val commands = c.feed(s.readings, s.rawWidth, s.rawHeight)
                     if (commands.isNotEmpty()) runOnUiThread { applyCalibration(c, commands) }
+                } else if (sweep == null) {
+                    // Only readings at the calibrated settings count; a sweep tries bad ones on purpose.
+                    // While exposure is set by hand, a bad value must not start a calibration.
+                    if (lost.update(s.counters) && manual == null) {
+                        Log.i(TAG, "counters lost for $LOST_FRAMES readings, recalibrating")
+                        runOnUiThread { if (calibrator == null && sweep == null) startCalibration() }
+                    } else {
+                        scoreSync.update(s.counters)?.let(::sendScore)
+                    }
                 }
                 stats = s
                 binding.status.post { renderStatus() }
             }
         camera.start(binding.preview, analyzer, settings.zoom, settings.exposure) { onCameraBound() }
+    }
+
+    /**
+     * Focuses on the counters in [s]'s reading, if it found both bars; analysis thread. The
+     * region spans both bars with some room, mapped from the turned frame back to the camera's.
+     */
+    private fun focusOnCounters(s: FrameAnalyzer.Stats) {
+        val r = s.counters
+        val line = r.line ?: return
+        val set = r.setBar ?: return
+        val goal = r.goalBar ?: return
+        needsFocus = false
+        val cx = (set.left + goal.right) / 2f
+        val (x, y) = s.rotation.toCamera(cx / s.width, line.centerAt(cx.toInt()) / s.height)
+        val size = ((goal.right - set.left) * FOCUS_MARGIN / s.width).coerceIn(0.1f, 0.8f)
+        focusStatus = "focusing"
+        runOnUiThread {
+            val started =
+                camera.focusOn(x, y, size) { ok ->
+                    focusStatus = if (ok) "on counters" else "on counters, not confirmed"
+                }
+            if (!started) needsFocus = true
+        }
+    }
+
+    /** Puts a steady reading on the server's scoreboard for this end's team; any thread. */
+    private fun sendScore(score: ScoreSync.Score) {
+        val server = discovery.server.value
+        if (server == null) {
+            syncStatus = "no server"
+            scoreSync.failed(score)
+            return
+        }
+        val side = settings.side
+        lifecycleScope.launch {
+            client
+                .sync(server, side, score.goals, score.sets)
+                .onSuccess {
+                    scoreSync.accepted(score)
+                    syncStatus = "sent ${side.name.lowercase()} goals ${score.goals} sets ${score.sets}"
+                    Log.i(TAG, syncStatus)
+                }.onFailure {
+                    syncStatus = "failed: ${it.message}"
+                    Log.w(TAG, "score not sent", it)
+                    delay(SYNC_RETRY_MS)
+                    scoreSync.failed(score)
+                }
+        }
     }
 
     /** Called on the analysis thread. */
@@ -404,7 +552,9 @@ class MainActivity : AppCompatActivity() {
             buildString {
                 appendLine("server ${discovery.server.value ?: "searching…"}")
                 appendLine("phone  ${wifiAddress() ?: "no wifi"}  adb :5555")
-                append("setup  end ${end ?: "?"}  ${settings.side.name.lowercase()}  zoom ")
+                append(
+                    "setup  end ${end ?: "?"}  ${settings.side.name.lowercase()}  turn ${(s?.rotation ?: settings.rotation).degrees}°  zoom ",
+                )
                 append(zoom?.let { "%.2f (%.2f–%.2f)".format(it.ratio, it.min, it.max) } ?: "%.2f".format(settings.zoom))
                 appendLine(
                     exposure?.let {
@@ -412,6 +562,7 @@ class MainActivity : AppCompatActivity() {
                     } ?: "",
                 )
                 appendLine("calib  ${calibrator?.status ?: calibration}")
+                appendLine("sync   $syncStatus")
                 if (recorder.recording) appendLine("rec    ${recorder.session?.name}  ${recorder.frames} frames, ${recorder.rawFrames} raw")
                 appendLine("debug  http://${wifiAddress() ?: "?"}:${DebugServer.PORT}/")
                 if (s != null) {
@@ -467,6 +618,14 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_PHOTO = "photo"
         const val EXTRA_CALIBRATE = "calibrate"
         const val LOCK_DELAY_MS = 2000L
+        const val LOST_FRAMES = 3
+        const val SYNC_RETRY_MS = 2000L
+
+        /** Focus region: both bars' span times this. */
+        const val FOCUS_MARGIN = 1.3f
+
+        /** Readings in a row that must agree before a score is sent: about 0.5 s at 25 fps. */
+        const val SYNC_STEADY_READINGS = 12
 
         // TODO: calibrate per table (tap goal corners on the preview) and persist.
         val DEFAULT_GOALS =

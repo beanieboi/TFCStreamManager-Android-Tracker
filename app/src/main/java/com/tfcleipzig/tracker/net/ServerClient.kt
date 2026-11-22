@@ -5,6 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -34,7 +36,86 @@ class ServerClient(
         val side: Side,
     )
 
+    @Serializable
+    private data class CorrectIntent(
+        val revision: Long,
+        /** `correct` (current set's goals) or `correct_sets`. */
+        val type: String,
+        val home: Int,
+        val away: Int,
+    )
+
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Makes the server show [goals] and [sets] for [side], leaving the other team's as they are:
+     * `correct_sets` and `correct` intents with absolute values, only for what differs. Absolute,
+     * so a missed or repeated sync does no harm. Retries once on a revision conflict.
+     */
+    suspend fun sync(
+        server: HttpUrl,
+        side: Side,
+        goals: Int,
+        sets: Int,
+    ): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                var board = scoreboard(server)
+                repeat(3) {
+                    val mine = board.getValue(side.name.lowercase()).jsonObject
+                    val theirs = board.getValue(if (side == Side.HOME) "away" else "home").jsonObject
+                    val (type, other) =
+                        when {
+                            mine.int("game_sets") != sets -> "correct_sets" to theirs.int("game_sets")
+                            mine.int("score") != goals -> "correct" to theirs.int("score")
+                            else -> return@runCatching
+                        }
+                    val value = if (type == "correct") goals else sets
+                    val (home, away) = if (side == Side.HOME) value to other else other to value
+                    val intent = CorrectIntent(board.revision(), type, home, away)
+                    board = post(server, json.encodeToString(CorrectIntent.serializer(), intent))
+                }
+                throw IOException("sync: scoreboard still differs after 3 intents")
+            }
+        }
+
+    /** POST /api/intents; the scoreboard after it, or the current one on a revision conflict. */
+    private fun post(
+        server: HttpUrl,
+        body: String,
+    ): JsonObject {
+        val request =
+            Request
+                .Builder()
+                .url(server.resolve("/api/intents")!!)
+                .post(body.toRequestBody(JSON))
+                .build()
+        http.newCall(request).execute().use { response ->
+            val text = response.body.string()
+            return when {
+                response.isSuccessful -> json.parseToJsonElement(text).jsonObject
+                response.code == 409 ->
+                    json
+                        .parseToJsonElement(text)
+                        .jsonObject
+                        .getValue("scoreboard")
+                        .jsonObject
+                else -> throw IOException("POST /api/intents $body: HTTP ${response.code} $text")
+            }
+        }
+    }
+
+    private fun scoreboard(server: HttpUrl): JsonObject {
+        val request = Request.Builder().url(server.resolve("/api/scoreboard")!!).build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("GET /api/scoreboard: HTTP ${response.code}")
+            return json.parseToJsonElement(response.body.string()).jsonObject
+        }
+    }
+
+    private fun JsonObject.int(key: String) = getValue(key).jsonPrimitive.int
+
+    private fun JsonObject.revision() = getValue("revision").jsonPrimitive.long
 
     /**
      * Posts a goal. On 409 it retries once with the server's current revision.

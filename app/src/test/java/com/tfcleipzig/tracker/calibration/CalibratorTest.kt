@@ -2,6 +2,7 @@ package com.tfcleipzig.tracker.calibration
 
 import com.tfcleipzig.tracker.calibration.Calibrator.Command
 import com.tfcleipzig.tracker.detection.BarScan
+import com.tfcleipzig.tracker.detection.Rotation
 import com.tfcleipzig.tracker.detection.StoneLine
 import com.tfcleipzig.tracker.detection.TableEndReader
 import org.junit.Assert.assertEquals
@@ -12,7 +13,7 @@ import kotlin.math.abs
 /**
  * [Calibrator] against a fake camera: the counters sit where they do in the reference photos,
  * scaled about the frame centre by the zoom; they read from 8 px pitch on, while in frame, best at
- * exposure +2.
+ * exposure +2, and only when the frame is turned by [FakeCamera.upright].
  */
 class CalibratorTest {
     private class FakeCamera(
@@ -20,12 +21,15 @@ class CalibratorTest {
         val bestExposure: Int = 2,
         /** Reading fails every n-th frame (hands, motion), 0 = never. */
         val dropEvery: Int = 0,
+        /** The turn that puts this camera's counters upright; other turns show nothing. */
+        val upright: Rotation = Rotation.R0,
     ) {
         var exposure = 0
         var locked = false
         private var n = 0
 
-        fun frame(): TableEndReader.Reading {
+        fun frame(rotation: Rotation = upright): TableEndReader.Reading {
+            if (rotation != upright) return TableEndReader.Reading(null, null, null, null, null, null)
             n++
 
             // At zoom 1: set bar from x 264, goal bar to x 409, line at y 271, pitch 5.7 px.
@@ -65,7 +69,8 @@ class CalibratorTest {
     ): Command {
         camera.apply(calibrator.start())
         repeat(5000) {
-            camera.apply(calibrator.feed(camera.frame(), W.toInt(), H.toInt()))?.let { return it }
+            val readings = calibrator.rotations.associateWith { camera.frame(it) }
+            camera.apply(calibrator.feed(readings, W.toInt(), H.toInt()))?.let { return it }
         }
         error("calibration didn't finish: ${calibrator.status}")
     }
@@ -82,6 +87,25 @@ class CalibratorTest {
         assertEquals(2, camera.exposure)
         assertTrue("exposure locked", camera.locked)
         assertTrue("score ${result.score}", result.score > 0.9f)
+    }
+
+    @Test
+    fun findsHowThePhoneHangs() {
+        val camera = FakeCamera(zoom = 1f, upright = Rotation.R180)
+        val calibrator = Calibrator(1f..4f, -4..4, startZoom = 1f)
+        val result = run(camera, calibrator) as Command.Done
+        assertEquals(Rotation.R180, result.rotation)
+        assertEquals(3.25f, result.zoom, 0.01f)
+        assertEquals(listOf(Rotation.R180), calibrator.rotations)
+    }
+
+    @Test
+    fun keepsTheSavedRotationWhenItStillReads() {
+        val camera = FakeCamera(zoom = 1f, upright = Rotation.R180)
+        val calibrator = Calibrator(1f..4f, -4..4, startZoom = 3.25f, startRotation = Rotation.R180)
+        assertEquals(Rotation.R180, calibrator.rotations.first())
+        val result = run(camera, calibrator) as Command.Done
+        assertEquals(Rotation.R180, result.rotation)
     }
 
     @Test

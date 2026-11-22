@@ -10,8 +10,10 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -37,6 +39,7 @@ class CameraPipeline(
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
+    private var analysis: ImageAnalysis? = null
 
     /** Zoom the camera runs at and its range, once bound; for the HUD. */
     data class Zoom(
@@ -90,7 +93,10 @@ class CameraPipeline(
                     ).setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
-                    .also { it.setAnalyzer(analysisExecutor, analyzer) }
+                    .also {
+                        it.setAnalyzer(analysisExecutor, analyzer)
+                        analysis = it
+                    }
 
             provider.unbindAll()
             camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
@@ -142,6 +148,61 @@ class CameraPipeline(
         Log.i(TAG, "exposure ${exposure.index} (${exposure.index * exposure.step} EV), ${if (locked) "locked" else "auto"}")
         onExposure(exposure)
         return exposure
+    }
+
+    /**
+     * Manual exposure: auto exposure off, the sensor at [exposureNs] and [iso] (clamped by the
+     * camera), white balance locked. Auto exposure meters the whole frame, mostly dark floor
+     * around a lit table, and overexposes the counters. [setExposure] goes back to auto.
+     * Call on the main thread; false before [start] bound.
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    fun setManualExposure(
+        exposureNs: Long,
+        iso: Int,
+    ): Boolean {
+        val camera = camera ?: return false
+        val options =
+            CaptureRequestOptions
+                .Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+        Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options.build())
+        Log.i(TAG, "manual exposure ${exposureNs / 1000} us, iso $iso")
+        return true
+    }
+
+    /**
+     * Focuses once on the region around ([x], [y]) of the camera frame (0..1, as the analysis
+     * frames come, before turning), [size] wide, and keeps the focus there. Continuous autofocus
+     * judges the whole frame and settles on whatever has most contrast; the counters are what
+     * matter. Manual lens positions don't work on this camera (it ignores them), so this is the
+     * way to steer focus. [onResult] gets whether the camera reports it in focus, on the main
+     * thread. Call on the main thread; false before [start] bound.
+     */
+    fun focusOn(
+        x: Float,
+        y: Float,
+        size: Float,
+        onResult: (Boolean) -> Unit = {},
+    ): Boolean {
+        val camera = camera ?: return false
+        val analysis = analysis ?: return false
+        val point = SurfaceOrientedMeteringPointFactory(1f, 1f, analysis).createPoint(x, y, size)
+        val action =
+            FocusMeteringAction
+                .Builder(point, FocusMeteringAction.FLAG_AF)
+                .disableAutoCancel()
+                .build()
+        val result = camera.cameraControl.startFocusAndMetering(action)
+        result.addListener({
+            val ok = runCatching { result.get().isFocusSuccessful }.getOrDefault(false)
+            Log.i(TAG, "focus on (%.2f, %.2f) size %.2f: %s".format(x, y, size, if (ok) "in focus" else "not in focus"))
+            onResult(ok)
+        }, ContextCompat.getMainExecutor(context))
+        return true
     }
 
     /** Sets the zoom, clamped to the camera's range; call on the main thread. Null before [start] bound. */
