@@ -15,3 +15,9 @@ local.properties
 # Wi-Fi password for tools, on-site recordings
 .wifi
 recordings/
+
+# Phone mount: test prints and FreeCAD backups
+hardware/**/test-prints/
+*.FCBak
+# Slicer projects carry the printer account ID; the STLs are what to share
+*.3mf
