@@ -11,3 +11,7 @@
 local.properties
 /app/build
 .kotlin
+
+# Wi-Fi password for tools, on-site recordings
+.wifi
+recordings/
