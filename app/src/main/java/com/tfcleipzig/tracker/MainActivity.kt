@@ -5,7 +5,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.ImageDecoder
-import android.net.wifi.WifiManager
+import android.net.ConnectivityManager
+import android.net.wifi.WifiInfo
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +21,10 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -142,6 +147,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        fullscreen()
 
         settings = TrackerSettings(this)
         applySettings(intent)
@@ -203,6 +209,22 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var batteryStatus = "-"
 
     @Volatile private var powerStatus = "-"
+
+    /**
+     * No status or navigation bar. The app always draws under bars and cutout (edge-to-edge), so
+     * the HUD and buttons keep clear of them with padding.
+     */
+    private fun fullscreen() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
+            val i = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            v.setPadding(i.left, i.top, i.right, i.bottom)
+            insets
+        }
+    }
 
     /**
      * Backlight at its lowest: nobody watches the phone during operations, and the screen has to
@@ -270,8 +292,11 @@ class MainActivity : AppCompatActivity() {
                     10f
             }
 
-        @Suppress("DEPRECATION") // connectionInfo is the simple way on API 33 without a network callback
-        val rssi = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager).connectionInfo?.rssi?.takeIf { it > -127 }
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val rssi =
+            (connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.transportInfo as? WifiInfo)
+                ?.rssi
+                ?.takeIf { it > -127 }
         val ip = wifiAddress()
         val id = Secure.getString(contentResolver, Secure.ANDROID_ID) ?: "unknown"
         val hand = manual

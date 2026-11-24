@@ -63,6 +63,7 @@ class PowerIdle(
                 addAction(Intent.ACTION_POWER_CONNECTED)
                 addAction(Intent.ACTION_POWER_DISCONNECTED)
             },
+            Context.RECEIVER_NOT_EXPORTED,
         )
         val plugged =
             context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
@@ -112,7 +113,10 @@ class PowerIdle(
         return Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, ms)
     }
 
-    /** Turns the screen on: the activity resumes and reopens the camera. */
+    /**
+     * Turns the screen on: the activity resumes and reopens the camera. Needs the
+     * TURN_SCREEN_ON app op (tools/setup-phone.sh); without it the screen stays off.
+     */
     @Suppress("DEPRECATION") // the plain way to switch the screen on from a background app
     private fun wakeScreen() {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager

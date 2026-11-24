@@ -43,7 +43,9 @@ class BatteryGate(
         if (registered) return
         registered = true
         // Sticky: the current state comes back right away.
-        context.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.let(::update)
+        context
+            .registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED), Context.RECEIVER_NOT_EXPORTED)
+            ?.let(::update)
     }
 
     fun stop() {

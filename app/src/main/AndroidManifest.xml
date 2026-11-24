@@ -8,6 +8,9 @@
     <!-- Screen timeout on battery (PowerIdle); granted by tools/setup-phone.sh. -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- ACQUIRE_CAUSES_WAKEUP only lights the screen with this app op (PowerIdle);
+         granted by tools/setup-phone.sh. -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />

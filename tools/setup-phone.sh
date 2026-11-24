@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Prepares a tracker phone for mounting out of reach. Needs a TrebleDroid userdebug GSI (adb root)
-# and USB for the first run.
+# Prepares a tracker phone for mounting out of reach. Needs LineageOS 23.2 with
+# Developer options > Rooted debugging on (adb root) and USB for the first run.
 #
 #   ANDROID_SERIAL=<serial> tools/setup-phone.sh
 #
@@ -8,9 +8,9 @@
 # - the tracker is the home app: it starts on boot and Android restarts it if it dies
 # - screen always on while powered, no lock screen, no battery optimisation for the tracker
 #
-# Not done here: booting when power comes back (tools/install-autoboot.sh, next step) and adb key
-# checks (the GSI ships ro.adb.secure=0, so anyone on the network gets a shell; still open, see
-# docs/remote-management.md). Both change /system, which only works offline. Order: docs/flashing.md.
+# Not done here: booting when power comes back (tools/install-autoboot.sh, next step).
+# adb over Wi-Fi only takes hosts whose key was accepted on the phone (ro.adb.secure=1): accept
+# the prompt on the phone for every machine that should manage it before mounting it.
 set -euo pipefail
 
 : "${ANDROID_SERIAL:?set ANDROID_SERIAL to the phone serial}"
@@ -51,6 +51,8 @@ dsh pm grant "$PKG" android.permission.CAMERA
 dsh cmd package set-home-activity "$PKG/.MainActivity"
 # The app shortens the screen timeout on battery so the camera stops and the phone lasts (PowerIdle).
 dsh appops set "$PKG" WRITE_SETTINGS allow
+# Lets the app light the screen when power comes back (PowerIdle).
+dsh appops set "$PKG" TURN_SCREEN_ON allow
 dsh dumpsys deviceidle whitelist "+$PKG" >/dev/null
 
 log "screen and Wi-Fi"

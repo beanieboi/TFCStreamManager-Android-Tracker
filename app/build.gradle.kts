@@ -10,9 +10,9 @@ android {
 
     defaultConfig {
         applicationId = "com.tfcleipzig.tracker"
-        // The tracker phones run LineageOS 20 (Android 13) only.
-        minSdk = 33
-        targetSdk = 33
+        // The tracker phones run LineageOS 23.2 (Android 16, kernel 6.12) only.
+        minSdk = 36
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1"
         ndk { abiFilters += listOf("arm64-v8a") }
