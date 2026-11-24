@@ -11,7 +11,8 @@
 #   - roll (across the phone): toothed hinge (Hirth-style, 36 teeth = 10 deg steps), axis across the
 #     pipe, on the middle of the phone's long side; the phone's long axis runs across the pipe
 #
-# Hardware: 2x M6x20 + 2x M6 nut (clamp), 1x M6x35 + M6 nut + M6 wing nut (hinge),
+# Hardware: 2x M6x25 + 2x M6 nut (clamp; x20 just reaches, any head up to 13 mm),
+#           1x M6x35 hex head + M6 wing nut (hinge; the head sits in the cheek's hex recess),
 #           2x M4x16 + 2x M4 nut (retaining bar).
 
 import math
@@ -25,15 +26,23 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 
 # --- parameters --------------------------------------------------------------------------------
 PIPE_D = 48.3
-CLAMP_ID = 48.6          # bore; the halves are cut back so they squeeze before they touch
-CLAMP_SPLIT_GAP = 0.75   # removed from each half at the split plane
+CLAMP_ID = 48.6          # sets the outside of the ring (with CLAMP_WALL), kept from the first print
+CLAMP_BORE = 50.0        # bore of both halves: 48.6 didn't close on the real pipe (ears ~4 mm apart,
+                         # printed bore undersize)
+CLAMP_SPLIT_GAP = 0.75   # removed from the lower half at the split plane
+CLAMP_SPLIT_GAP_TOP = 1.5  # and from the upper one: with both bores at 50 the halves would touch
+                           # before they grip a 48.3 pipe; this leaves ~0.5 mm to squeeze
 CLAMP_WALL = 6.0
 CLAMP_W = 30.0           # along the pipe
 EAR_H = 10.0             # each half's ear height from the split plane
+EAR_H_BOTTOM = 16.0      # lower ear: the ring bulged below a 10 mm ear and covered the inner side of
+                         # the nut trap; at 16 the ear's underside is below the ring (z=-14 there)
 BOLT_Y = 32.0            # clamp bolt centre from pipe axis
 EAR_END = 39.0
 
 M6_HOLE = 6.4
+M6_HEAD_D = 13.5         # clearance for the clamp screw heads (pan head ISO 7045: 12 mm), cut
+                         # into the ring above the top ears; without it the head sits on the ring
 M6_NUT_AF = 10.3         # across flats, with clearance
 M6_NUT_DEPTH = 5.0
 M4_HOLE = 4.4
@@ -41,7 +50,8 @@ M4_NUT_AF = 7.3
 M4_NUT_T = 3.6
 
 HINGE_Z = -62.0          # hinge axis height (global)
-TAB_T = 10.0             # tab thickness (along Y)
+TAB_T = 10.0             # tab slot between the cheeks (along Y), sets the cheek spacing
+TAB_SHAVE = 0.4          # taken off each face of the tab itself: 0.15 mm was too tight in print
 HUB_R = 12.0             # hinge hub radius = tooth ring radius
 TEETH = 36
 TOOTH_H = 1.2
@@ -68,6 +78,7 @@ FLOOR_RIM = 8.0          # floor frame width around the camera window
 POST_L = 10.0
 POST_W = 14.0            # posts at the cable end, inward from the pocket side
 BAR_T = 4.0
+BAR_LIP = LIP + 2.0      # the bar's reach over the screen; 4 mm barely held the phone
 
 LP = PHONE_L + 2 * FIT
 WP = PHONE_W + 2 * FIT
@@ -172,28 +183,37 @@ def place_teeth(shape, y_face, outward, hinge):
 # --- clamp -------------------------------------------------------------------------------------
 def clamp_half(upper):
     ro = CLAMP_ID / 2 + CLAMP_WALL
+    bore = CLAMP_BORE
+    tt = TAB_T - 2 * TAB_SHAVE
     ring = cyl(ro, CLAMP_W, V(-CLAMP_W / 2, 0, 0), V(1, 0, 0))
-    ears = box(-CLAMP_W / 2, CLAMP_W / 2, -EAR_END, EAR_END, -EAR_H, EAR_H)
+    ears = box(-CLAMP_W / 2, CLAMP_W / 2, -EAR_END, EAR_END, -EAR_H if upper else -EAR_H_BOTTOM, EAR_H)
     body = ring.fuse(ears)
     if upper:
-        body = body.common(box(-50, 50, -50, 50, CLAMP_SPLIT_GAP, 50))
+        body = body.common(box(-50, 50, -50, 50, CLAMP_SPLIT_GAP_TOP, 50))
     else:
         body = body.common(box(-50, 50, -50, 50, -50, -CLAMP_SPLIT_GAP))
         hz = HINGE_Z
         tab = poly_xz(
             [(-CLAMP_W / 2, -ro + 4), (CLAMP_W / 2, -ro + 4), (CLAMP_W / 2, hz + 8),
              (HUB_R, hz), (-HUB_R, hz), (-CLAMP_W / 2, hz + 8)],
-            -TAB_T / 2, TAB_T / 2)
-        hub = cyl(HUB_R, TAB_T, V(0, -TAB_T / 2, hz), V(0, 1, 0))
+            -tt / 2, tt / 2)
+        hub = cyl(HUB_R, tt, V(0, -tt / 2, hz), V(0, 1, 0))
         body = body.fuse(tab).fuse(hub)
-        body = body.fuse(place_teeth(TAB_TEETH, TAB_T / 2, +1, (0, hz)))
-        body = body.fuse(place_teeth(TAB_TEETH, -TAB_T / 2, -1, (0, hz)))
+        body = body.fuse(place_teeth(TAB_TEETH, tt / 2, +1, (0, hz)))
+        body = body.fuse(place_teeth(TAB_TEETH, -tt / 2, -1, (0, hz)))
         body = body.cut(cyl(M6_HOLE / 2, 40, V(0, -20, hz), V(0, 1, 0)))
-    body = body.cut(cyl(CLAMP_ID / 2, CLAMP_W + 2, V(-CLAMP_W / 2 - 1, 0, 0), V(1, 0, 0)))
+    body = body.cut(cyl(bore / 2, CLAMP_W + 2, V(-CLAMP_W / 2 - 1, 0, 0), V(1, 0, 0)))
     for y in (-BOLT_Y, BOLT_Y):
-        body = body.cut(cyl(M6_HOLE / 2, 2 * EAR_H + 2, V(0, y, -EAR_H - 1), V(0, 0, 1)))
+        if upper:
+            body = body.cut(cyl(M6_HOLE / 2, 2 * EAR_H + 2, V(0, y, -EAR_H - 1), V(0, 0, 1)))
+            body = body.cut(cyl(M6_HEAD_D / 2, 40, V(0, y, EAR_H), V(0, 0, 1)))
+        else:
+            body = body.cut(cyl(M6_HOLE / 2, EAR_H + EAR_H_BOTTOM + 2, V(0, y, -EAR_H_BOTTOM - 1), V(0, 0, 1)))
         if not upper:
-            body = body.cut(hex_prism(M6_NUT_AF, M6_NUT_DEPTH + 0.01, V(0, y, -EAR_H - 0.01), V(0, 0, 1)))
+            # straight hex shaft from the underside; the nut sits at its top, where it sat in the
+            # 10 mm ear, so the M6x20 still reaches through
+            depth = EAR_H_BOTTOM - EAR_H + M6_NUT_DEPTH
+            body = body.cut(hex_prism(M6_NUT_AF, depth + 0.01, V(0, y, -EAR_H_BOTTOM - 0.01), V(0, 0, 1)))
     return body.removeSplitter()
 
 
@@ -243,7 +263,7 @@ def cradle():
 
 def bar():
     yo = WP / 2 + WALL_T
-    b = box(LP - LIP, LP + POST_L, -yo, yo, TOP_Z, TOP_Z + BAR_T)
+    b = box(LP - BAR_LIP, LP + POST_L, -yo, yo, TOP_Z, TOP_Z + BAR_T)
     for s in (-1, 1):
         y = s * (WP / 2 - POST_W / 2 + WALL_T / 2)
         b = b.cut(cyl(M4_HOLE / 2, BAR_T + 2, V(LP + POST_L / 2, y, TOP_Z - 1), V(0, 0, 1)))
