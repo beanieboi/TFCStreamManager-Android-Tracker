@@ -8,15 +8,15 @@ import android.os.BatteryManager
 import android.util.Log
 
 /**
- * Holds tracking back while the battery is nearly empty. A phone that ran flat boots as soon as it
- * gets power again (tools/system/tracker-autoboot.rc), and the camera would then draw more than the
- * charger delivers. So below [openAt] % the camera stays off and the phone just charges; tracking
- * starts at [openAt] % and stops again only below [closeAt] %, so it doesn't flicker around one
- * level.
+ * Holds tracking back while the battery is nearly empty. A phone that ran flat boots by itself once
+ * it gets power again and the battery reaches about 3.7 V (the kernel restarts it from charger
+ * mode), and the camera would then draw more than the charger delivers. So below [openAt] % the
+ * camera stays off and the phone just charges; tracking starts at [openAt] % and stops again only
+ * below [closeAt] %, so it doesn't flicker around one level.
  */
 class BatteryGate(
     private val context: Context,
-    /** Called on the main thread when the gate opens or closes, with the battery level. */
+    /** Called on the main thread when the gate opens or closes or the battery level changes. */
     private val onChange: (open: Boolean, level: Int) -> Unit,
     private val openAt: Int = 15,
     private val closeAt: Int = 10,
@@ -58,15 +58,16 @@ class BatteryGate(
         val l = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
         if (l < 0 || scale <= 0) return
-        level = l * 100 / scale
-        val next = decide(open, level, openAt, closeAt)
-        val changed = next != open || !reported
+        val now = l * 100 / scale
+        val next = decide(open, now, openAt, closeAt)
+        val gateChanged = next != open || !reported
+        val levelChanged = now != level
         reported = true
         open = next
-        if (changed) {
-            Log.i(TAG, "battery $level %: tracking ${if (open) "on" else "off until $openAt %"}")
-            onChange(open, level)
-        }
+        level = now
+        if (gateChanged) Log.i(TAG, "battery $level %: tracking ${if (open) "on" else "off until $openAt %"}")
+        // Every level change too, not only gate changes: the HUD shows the level.
+        if (gateChanged || levelChanged) onChange(open, level)
     }
 
     /** The first reading is always passed on, so the app knows where it stands. */

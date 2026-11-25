@@ -50,6 +50,7 @@ import com.tfcleipzig.tracker.detection.Zone
 import com.tfcleipzig.tracker.net.ServerClient
 import com.tfcleipzig.tracker.net.ServerDiscovery
 import com.tfcleipzig.tracker.net.TrackerReport
+import com.tfcleipzig.tracker.net.WifiAwake
 import com.tfcleipzig.tracker.power.BatteryGate
 import com.tfcleipzig.tracker.power.PowerIdle
 import com.tfcleipzig.tracker.settings.TrackerSettings
@@ -190,10 +191,14 @@ class MainActivity : AppCompatActivity() {
         darkScreen()
         power = PowerIdle(this, keepScreenOn = { binding.root.keepScreenOn = it }, onChange = { powerStatus = it })
         power.start()
+        wifi = WifiAwake(this).also { it.start() }
         battery =
             BatteryGate(this, onChange = { open, level ->
                 batteryStatus = if (open) "battery $level %" else "battery $level %: charging to 15 % before tracking"
-                camera.setEnabled(open)
+                if (open != cameraGateOpen) {
+                    cameraGateOpen = open
+                    camera.setEnabled(open)
+                }
                 renderStatus()
             })
         battery.start()
@@ -205,6 +210,12 @@ class MainActivity : AppCompatActivity() {
 
     /** Holds tracking back while the battery is nearly empty (see [BatteryGate]). */
     private lateinit var battery: BatteryGate
+
+    /** Wi-Fi power save off while tracking (see [WifiAwake]). */
+    private lateinit var wifi: WifiAwake
+
+    /** Last gate state passed to the camera; null until the first battery reading. */
+    private var cameraGateOpen: Boolean? = null
 
     @Volatile private var batteryStatus = "-"
 
@@ -630,6 +641,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (::power.isInitialized) power.stop()
+        if (::wifi.isInitialized) wifi.stop()
         if (::battery.isInitialized) battery.stop()
         debugServer?.stop()
         recorder.stop()
