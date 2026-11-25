@@ -24,30 +24,30 @@ Gebaut für die Tische vom TFC Leipzig, ein Handy pro Tischseite.
   Es wird immer der ganze Stand geschickt, also macht es nichts, wenn mal was verloren geht oder
   doppelt ankommt.
 - **Strom weg?** Dann ruht das Handy: Kamera aus, WLAN bleibt an. Ist es ganz aus und kriegt
-  wieder Strom, startet es von selbst (`tools/install-autoboot.sh`). Mit fast leerem Akku lädt es
-  erst mal, bevor es wieder liest.
+  wieder Strom, startet es von selbst, sobald der Akku genug Ladung hat (macht der Kernel). Mit
+  fast leerem Akku lädt es erst mal, bevor es wieder liest.
 - **Von weitem:** Jedes Handy meldet sich beim Server mit Akku, Spielstand und Kamera. Unter
   `http://<ip>:8081/` gibt's eine Debug-Seite mit Bild, Spielstand, Belichtung, Zoom und
   Aufnahmen zum Auswerten.
 
 ## Was du brauchst
 
-- Ein **Oukitel WP5** mit entsperrtem Bootloader und TrebleDroid (Android 13). Andere Handys gehen
-  bestimmt auch, probiert haben wir nur das.
+- Ein **Oukitel WP5** mit entsperrtem Bootloader, TrebleDroid (Android 16) und dem Kernel 6.12
+  aus der WP5-Portierung. Andere Handys gehen bestimmt auch (dann ohne Autostart), probiert haben
+  wir nur das.
 - Dauerstrom per USB und eine Halterung über dem Tisch, mit Blick aufs Tischende.
 
 ## Einrichten
 
 Alles Schritt für Schritt in [docs/flashing.md](docs/flashing.md) (auf Englisch). Kurz:
 
-1. TrebleDroid draufspielen
+1. Kernel (Boot-Image mit Autostart) und TrebleDroid draufspielen
 2. `tools/setup-phone.sh`: App als Startbildschirm, adb übers WLAN, Bildschirm bleibt an
-3. `tools/install-autoboot.sh`: Handy geht von selbst an, sobald Strom da ist
-4. am Tisch einmessen
+3. am Tisch einmessen
 
 ## Mitmachen
 
-Alles, was du brauchst (JDK, Android SDK, adb, fastboot, e2fsprogs), kommt aus dem Nix-Flake:
+Alles, was du brauchst (JDK, Android SDK, adb, fastboot, e2fsprogs, xz), kommt aus dem Nix-Flake:
 
 ```
 nix develop

@@ -42,8 +42,9 @@
             packages = [
               pkgs.jdk21_headless
               android.platform-tools
-              # tools/install-autoboot.sh patches the phones' system image offline.
+              # docs/flashing.md: unpacking the GSI and patching images offline.
               pkgs.e2fsprogs
+              pkgs.xz
             ];
             JAVA_HOME = pkgs.jdk21_headless.home;
             ANDROID_HOME = sdk;
