@@ -6,8 +6,8 @@ Wi-Fi.
 ## Setup (once per phone, over USB)
 
 ```
-./gradlew :app:assembleDebug
-ANDROID_SERIAL=<serial> ADB=~/Android/Sdk/platform-tools/adb tools/setup-phone.sh
+./gradlew :app:assembleRelease
+ANDROID_SERIAL=<serial> NAME=tracker1 WIFI="SSID=password-file ..." ADB=~/Android/Sdk/platform-tools/adb tools/setup-phone.sh
 ```
 
 Needs the TrebleDroid `userdebug` GSI (`adb root` works without a toggle). The script:
@@ -18,6 +18,10 @@ Needs the TrebleDroid `userdebug` GSI (`adb root` works without a toggle). The s
 - keeps the screen on while powered, turns off the lock screen and battery optimisation for the
   tracker.
 - turns off all sounds and vibration (system sounds, charging sound, volumes).
+- names the phone (`NAME`: DHCP hostname, HUD, reports) and adds the Wi-Fi networks from `WIFI`
+  with the phone's own MAC. The networks must be WPA2 only: with WPA3 the phones receive no
+  broadcasts, so nobody can reach them (ARP) until they send something themselves.
+- installs the release build and compiles it ahead of time.
 
 ## Day to day
 
@@ -25,7 +29,8 @@ Needs the TrebleDroid `userdebug` GSI (`adb root` works without a toggle). The s
 adb connect <ip>:5555               # IP is on the HUD ("phone" line); reserve it in DHCP
 adb -s <ip>:5555 reboot
 adb -s <ip>:5555 shell am force-stop com.tfcleipzig.tracker   # home app, comes back
-adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <ip>:5555 install -r app/build/outputs/apk/release/app-release.apk
+adb -s <ip>:5555 shell cmd package compile -m speed -f com.tfcleipzig.tracker
 adb -s <ip>:5555 shell am start -n com.tfcleipzig.tracker/.MainActivity --ef zoom 2.3
 ```
 
@@ -72,16 +77,20 @@ adb shell dumpsys battery reset      # back
 
 Plugged in while off, the bootloader starts charger mode, and without help the phone stays there
 until someone holds the power button. The tracker boot image does it in the kernel: MediaTek's
-charger driver restarts the phone from charger mode once USB power is there and the battery is at
-3.7 V or more (two checks in a row, at least 20 s after start). A restart from charger mode boots
+charger driver restarts the phone from charger mode once USB power is there, the battery is at
+3.7 V or more and at 20 % or more (two checks in a row, at least 20 s after start). A restart from charger mode boots
 Android normally: the bootloader only chooses charger mode when power arrives at a phone that is
 off.
 
-- **Switch:** kernel command line `mtk_charger.kpoc_autoboot_mv=3700`, set when the boot image is
-  built (`KPOC_AUTOBOOT_MV=3700` in the WP5 port's build script). 0 or missing: off, the phone
+- **Switch:** kernel command line `mtk_charger.kpoc_autoboot_mv=3700 mtk_charger.kpoc_autoboot_soc=20`,
+  set when the boot image is built (`KPOC_AUTOBOOT_MV=3700 KPOC_AUTOBOOT_SOC=20` in the WP5 port's
+  build script). 0 or missing: off, the phone
   waits in charger mode as usual.
 - **Nothing on `/system`:** it survives GSI updates and wipes, and the GSI stays as TrebleDroid
   ships it (apart from the TEE fix in docs/flashing.md).
+- **Why also 20 %:** while charging the battery voltage reads far above its resting value (4 A
+  into an empty battery: 4.0 V after 30 s), so 3.7 V alone started a drained phone at 2 %. 20 % is
+  the low-battery shutdown limit, so a phone never starts into the range where it would switch off.
 - **Why 3.7 V:** with a nearly empty battery the bootloader refuses a normal boot (at about
   3.45 V and below it switches the phone off instead). Restarting right away would leave a
   drained phone off for good; waiting in charger mode until 3.7 V lets it charge first.
@@ -89,7 +98,11 @@ off.
   Android with the tracker in about 2 minutes, Wi-Fi back. The kernel log says
   `wp5: KPOC autoboot: vbus=… vbat=… >= 3700 mV, rebooting to Android`. With a threshold the
   battery can't reach, the phone stays in charger mode and the power button still starts it.
-- **Not tested yet:** a fully drained battery (the real power cut).
+- **Seen on 2026-11-26 (fully drained):** a tracker that ran flat and was off, put on a PD wall
+  charger: charger mode, restart at vbat 4021 mV after 34 s, Android about 2 minutes after
+  plugging in, camera held off by `BatteryGate` (2 %) while it charges. That was with the voltage gate only;
+  since then it waits for 20 % (tested on 2026-11-26: a 99 % gate kept the phone in charger mode,
+  20 % at 78 % restarted it with `soc=78 >= 20 %` in the log).
 
 ## Battery limits (20–80 %)
 
@@ -129,7 +142,9 @@ adb shell cat /sys/class/power_supply/mt6370_pmu_charger/usb_type   # wants [DCP
 | wall charger (`DCP`) | 3.2 A | 2.05 A |
 
 On a PC port a running tracker (screen, camera, Wi-Fi: around 1–1.5 A) drains the battery even
-though it is plugged in. USB-C PD or Quick Charge make no difference, the phone charges at 5 V.
+though it is plugged in. A USB-C PD charger is faster: the phone negotiates MediaTek Pump Express 4.0
+over PD (6–7 V); seen 2026-11-26 on a PD wall charger: 2.5 A input at 6.2 V, about 4.2 A into the
+battery (kernel log `mtk_pe40_pd_request`, `pd:4`).
 
 After a boot on a nearly empty battery the app holds tracking back (`BatteryGate`): the camera
 stays off below 15 % and the phone only charges. Try it with

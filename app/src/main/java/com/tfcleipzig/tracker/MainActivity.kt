@@ -11,6 +11,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings.Global
 import android.provider.Settings.Secure
 import android.util.Log
 import android.view.MotionEvent
@@ -314,7 +315,7 @@ class MainActivity : AppCompatActivity() {
         val e = if (hand != null) ExposureTracker.Exposure(hand.exposureNs, hand.iso) else tracker?.exposure ?: settings.exposure
         return TrackerReport(
             id = id,
-            name = "${Build.MODEL} ${id.takeLast(4)}",
+            name = deviceName() ?: "${Build.MODEL} ${id.takeLast(4)}",
             appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "?",
             ip = ip,
             debugUrl = ip?.let { "http://$it:${DebugServer.PORT}/" },
@@ -814,7 +815,7 @@ class MainActivity : AppCompatActivity() {
         binding.status.text =
             buildString {
                 appendLine("server ${discovery.server.value ?: "searching…"}")
-                appendLine("phone  ${wifiAddress() ?: "no wifi"}  adb :5555")
+                appendLine("phone  ${deviceName() ?: "unnamed"}  ${wifiAddress() ?: "no wifi"}  adb :5555")
                 append(
                     "setup  end ${end ?: "?"}  ${settings.side.name.lowercase()}  turn ${(s?.rotation ?: settings.rotation).degrees}°  zoom ",
                 )
@@ -846,6 +847,15 @@ class MainActivity : AppCompatActivity() {
     private fun describe(r: TableEndReader.Reading): String =
         "goals ${r.goals ?: "?"}  sets ${r.sets ?: "?"}  timeouts ${r.timeouts ?: "?"}" +
             if (r.problems.isEmpty()) "" else "\n       " + r.problems.joinToString("\n       ")
+
+    /**
+     * The phone's name (tracker1, tracker2), set by tools/setup-phone.sh. Android also sends it as
+     * the DHCP hostname. Null while it is still the GSI default.
+     */
+    private fun deviceName(): String? =
+        Global
+            .getString(contentResolver, Global.DEVICE_NAME)
+            ?.takeIf { it.isNotBlank() && it != Build.MODEL.replace('_', ' ') }
 
     /** This phone's IPv4 address on Wi-Fi, to reach it with `adb connect`. */
     private fun wifiAddress(): String? =

@@ -22,7 +22,7 @@ set up a new one. Everything here was done on the first tracker phone on 2026-11
 | **fastbootd** (userspace fastboot, in recovery) | `adb reboot fastboot`; or recovery → "Enter fastboot" | flash `system` and `vendor` (logical partitions in `super`) |
 | bootloader fastboot (LK) | `adb reboot bootloader`; or recovery → "Reboot to bootloader" | flash `boot`, `vbmeta`, whole `super`; **not** `system`/`vendor` on their own |
 | recovery | hold **Power + Volume Up** about 12 s | menu to reboot, enter fastboot, factory reset |
-| charger mode | power arrives at a phone that is off | with the tracker boot image: restarts into Android by itself once the battery is at 3.7 V |
+| charger mode | power arrives at a phone that is off | with the tracker boot image: restarts into Android by itself once the battery is at 20 % (and 3.7 V) |
 
 - **Getting out of anything:** holding **Power 10–15 s** is a hardware cold reset (boot reason
   `reboot_longkey`). A 4 s press in charger mode starts the boot normally.
@@ -109,7 +109,7 @@ What goes on a tracker phone (set up this way on 2026-11-25):
 
 | partition | what | from |
 |---|---|---|
-| `boot` | Linux 6.12 with the WP5 drivers: autostart from charger mode, battery kept at 20–80 % | WP5 kernel port, built with `KPOC_AUTOBOOT_MV=3700 CHARGE_STOP_SOC=80 SHUTDOWN_SOC=20` (kernel command line `mtk_charger.kpoc_autoboot_mv=3700 mtk_charger.charge_stop_soc=80 mt6357_battery.shutdown_soc=20`) |
+| `boot` | Linux 6.12 with the WP5 drivers: autostart from charger mode, battery kept at 20–80 % | WP5 kernel port, built with `KPOC_AUTOBOOT_MV=3700 KPOC_AUTOBOOT_SOC=20 CHARGE_STOP_SOC=80 SHUTDOWN_SOC=20` (kernel command line `mtk_charger.kpoc_autoboot_mv=3700 mtk_charger.kpoc_autoboot_soc=20 mtk_charger.charge_stop_soc=80 mt6357_battery.shutdown_soc=20`) |
 | `system` | TrebleDroid `ci-20250617`, Android 16, userdebug: `adb root` works | `system-td-arm64-vanilla.img.xz` from [TrebleDroid's releases](https://github.com/TrebleDroid/treble_experimentations/releases/tag/ci-20250617), plus the TEE fix below |
 | `vendor` | stock Android 11 vendor from the WP5 port, `/data` not encrypted | already on phones from the WP5 port; TrebleDroid doesn't boot yet with encrypted `/data` on this phone |
 
@@ -140,8 +140,9 @@ What goes on a tracker phone (set up this way on 2026-11-25):
    ```
    The first boot takes a few minutes. Connect Wi-Fi on the phone (or
    `adb shell cmd wifi connect-network <ssid> wpa2 <password>`).
-5. **Tracker app and phone settings:** build `nix develop -c ./gradlew :app:assembleDebug`, then run
-   `ANDROID_SERIAL=<serial> tools/setup-phone.sh`. It sets up adb over Wi-Fi, makes the
+5. **Tracker app and phone settings:** build `nix develop -c ./gradlew :app:assembleRelease`, then run
+   `ANDROID_SERIAL=<serial> NAME=tracker1 WIFI="SSID=password-file ..." tools/setup-phone.sh`.
+   It names the phone, adds the Wi-Fi networks (WPA2 only), sets up adb over Wi-Fi, makes the
    tracker the home app, and turns on always-on screen, no lock screen, no battery optimisation,
    `WRITE_SETTINGS`, and all sounds off.
 6. **Check the autostart:** plugged in, `adb shell reboot -p`. It should go charging picture →
@@ -155,9 +156,14 @@ What goes on a tracker phone (set up this way on 2026-11-25):
 ## Updating just the app
 
 ```
-nix develop -c ./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+nix develop -c ./gradlew :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+adb shell cmd package compile -m speed -f com.tfcleipzig.tracker
 adb shell am start -n com.tfcleipzig.tracker/.MainActivity     # add --ez hold true away from the table
 ```
 
 After `install -r` the app stays stopped until something starts it, so always start it.
+
+The phones run the release build, compiled ahead of time (`compile -m speed`). On the WP5 it reads
+a frame in 42 ms instead of 80 ms with the debug build (18 instead of 9 fps, 2026-11-27). The debug
+build is for development. Both are signed with the debug key, so either installs over the other.

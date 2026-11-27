@@ -13,7 +13,9 @@ import android.net.wifi.WifiManager
  * turns the screen off after a while and power save comes back, which saves battery.
  * Check with `adb shell iw dev wlan0 get power_save`.
  */
-class WifiAwake(context: Context) {
+class WifiAwake(
+    context: Context,
+) {
     private val lock =
         context.applicationContext
             .getSystemService(WifiManager::class.java)

@@ -299,33 +299,53 @@ class CameraPipeline(
             ?: ANALYSIS_SIZE
     }
 
+    /** Tries [open] again a little later, e.g. after the camera was refused or lost. */
+    private val retryOpen = Runnable { open() }
+
+    private fun scheduleRetry() {
+        cameraHandler.removeCallbacks(retryOpen)
+        cameraHandler.postDelayed(retryOpen, RETRY_MS)
+    }
+
     @SuppressLint("MissingPermission") // the activity asks for the camera before start()
     private fun open() {
         if (!enabled || device != null || cameraId == null) return
-        manager.openCamera(
-            cameraId,
-            object : CameraDevice.StateCallback() {
-                override fun onOpened(camera: CameraDevice) {
-                    device = camera
-                    configure(camera)
-                }
+        if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        try {
+            manager.openCamera(
+                cameraId,
+                object : CameraDevice.StateCallback() {
+                    override fun onOpened(camera: CameraDevice) {
+                        device = camera
+                        configure(camera)
+                    }
 
-                override fun onDisconnected(camera: CameraDevice) {
-                    camera.close()
-                    if (device === camera) device = null
-                }
+                    override fun onDisconnected(camera: CameraDevice) {
+                        Log.w(TAG, "camera disconnected, retrying")
+                        camera.close()
+                        if (device === camera) device = null
+                        scheduleRetry()
+                    }
 
-                override fun onError(
-                    camera: CameraDevice,
-                    error: Int,
-                ) {
-                    Log.w(TAG, "camera error $error")
-                    camera.close()
-                    if (device === camera) device = null
-                }
-            },
-            cameraHandler,
-        )
+                    override fun onError(
+                        camera: CameraDevice,
+                        error: Int,
+                    ) {
+                        Log.w(TAG, "camera error $error, retrying")
+                        camera.close()
+                        if (device === camera) device = null
+                        scheduleRetry()
+                    }
+                },
+                cameraHandler,
+            )
+        } catch (e: Exception) {
+            // CameraAccessException, SecurityException ("from background" when started with the
+            // screen off) and the like: the tracker is the home app, a crash leaves the phone on
+            // Android's home picker. Try again while the activity is visible.
+            Log.w(TAG, "camera open failed, retrying: ${e.message}")
+            scheduleRetry()
+        }
     }
 
     private fun configure(camera: CameraDevice) {
@@ -510,6 +530,9 @@ class CameraPipeline(
 
         /** After opening, stream this long so auto white balance settles before it is locked. */
         const val AWB_SETTLE_MS = 1500L
+
+        /** Wait before opening the camera again after it was refused or lost. */
+        private const val RETRY_MS = 5000L
 
         private const val TAG = "CameraPipeline"
 

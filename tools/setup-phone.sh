@@ -2,8 +2,10 @@
 # Prepares a tracker phone for mounting out of reach. Needs the TrebleDroid userdebug GSI
 # (adb root works without a toggle) and USB for the first run.
 #
-#   ANDROID_SERIAL=<serial> tools/setup-phone.sh
+#   ANDROID_SERIAL=<serial> NAME=tracker1 tools/setup-phone.sh
+#   WIFI="SSID=password-file ..." ANDROID_SERIAL=<serial> NAME=tracker1 tools/setup-phone.sh
 #
+# - NAME is the phone's hostname (DHCP) and its name in the HUD and in reports to the server
 # - adb over Wi-Fi on port 5555 (the HUD shows the IP): adb connect <ip>:5555, then e.g. adb reboot
 # - the tracker is the home app: it starts on boot and Android restarts it if it dies
 # - screen always on while powered, no lock screen, no battery optimisation for the tracker
@@ -13,10 +15,11 @@
 set -euo pipefail
 
 : "${ANDROID_SERIAL:?set ANDROID_SERIAL to the phone serial}"
+: "${NAME:?set NAME to the phone name, e.g. tracker1}"
 export ANDROID_SERIAL
 ADB=${ADB:-adb}
 PKG=com.tfcleipzig.tracker
-APK=$(dirname "$0")/../app/build/outputs/apk/debug/app-debug.apk
+APK=$(dirname "$0")/../app/build/outputs/apk/release/app-release.apk
 
 # `command`: with ADB=adb the function would call itself.
 adb() { command "$ADB" "$@"; }
@@ -38,14 +41,28 @@ root() {
 log "root"
 root
 
+log "name $NAME"
+# Android sends device_name as the DHCP hostname (on the next Wi-Fi connect).
+dsh settings put global device_name "$NAME"
+
+log "Wi-Fi networks"
+# WIFI="SSID=password-file ..." adds or updates each network (WPA2/WPA3); passwords stay out of the repo.
+# -r none: the phone's own MAC instead of a random one per network, so the router always sees the same device.
+for net in ${WIFI:-}; do
+    dsh cmd wifi add-network "${net%%=*}" wpa2 "'$(<"${net#*=}")'" -r none
+done
+dsh cmd wifi list-networks
+
 log "adb over Wi-Fi"
 dsh setprop persist.adb.tcp.port 5555
 
 log "tracker app"
 if [[ -f $APK ]]; then
     adb install -r -g "$APK"
+    # Compiled ahead of time, the release build reads a frame in about half the time of the debug build.
+    dsh cmd package compile -m speed -f "$PKG"
 else
-    echo "no $APK, build it first (./gradlew :app:assembleDebug); skipping install"
+    echo "no $APK, build it first (./gradlew :app:assembleRelease); skipping install"
 fi
 dsh pm grant "$PKG" android.permission.CAMERA
 dsh cmd package set-home-activity "$PKG/.MainActivity"
@@ -77,11 +94,17 @@ dsh cmd audio set-ringer-mode SILENT 2>/dev/null || true
 # media volume set sometimes does not stick (seen on tracker 2); volume-down keys lower music too
 for i in $(seq 16); do dsh input keyevent 25; done
 
+log "WebView"
+# TrebleDroid ships com.android.webview, but Android looks for Google's WebView first and then
+# picks none: every app that shows web content crashes. Choosing it is stored and survives reboots.
+dsh cmd webviewupdate set-webview-implementation com.android.webview
+
 log "reboot to check it all comes back"
 sleep 15 # the home app choice is written to disk with a delay
 adb reboot
 sleep 10
 wait_boot
+echo "name $(dsh settings get global device_name | tr -d '\r')"
 echo "adb port $(dsh getprop persist.adb.tcp.port | tr -d '\r')"
 echo "wifi $(dsh 'ip -4 addr show wlan0' | awk '/inet /{print $2}')"
 echo "home $(dsh cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1)"
